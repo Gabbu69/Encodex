@@ -65,11 +65,49 @@ function localRequest(request: Request) {
   return remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
 }
 
-function phonePage(token: string, success = false) {
-  if (success) {
-    return `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Uploaded</title><link rel="stylesheet" href="/capture.css"></head><body><main class="mobile-complete"><h1>Photo received</h1><p>Review continues on the laptop.</p></main></body></html>`;
-  }
-  return `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Capture document</title><link rel="stylesheet" href="/capture.css"></head><body><main class="mobile-capture"><h1>Document Capture</h1><p>Place the full page inside the camera frame.</p><form method="post" enctype="multipart/form-data" action="/capture/${token}"><label class="pick">Document photo<input required name="document" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"></label><button type="submit">Send To Laptop</button></form></main></body></html>`;
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;"
+  }[character] ?? character));
+}
+
+function phoneShell(title: string, content: string, script = "") {
+  return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>${escapeHtml(title)} | Encodex</title><link rel="stylesheet" href="/capture.css"></head><body><main class="phone-shell"><header class="phone-brand"><span>EX</span><strong>Encodex</strong></header>${content}</main>${script}</body></html>`;
+}
+
+function capturePage(token: string) {
+  return phoneShell("Capture document", `
+    <section class="mobile-capture">
+      <p class="eyebrow">Phone capture</p>
+      <h1>Scan document</h1>
+      <p class="lead">Fill the frame with one clear page.</p>
+      <form id="capture-form" method="post" enctype="multipart/form-data" action="/capture/${escapeHtml(token)}">
+        <label class="pick">
+          <span class="pick-title">Take or choose photo</span>
+          <span class="pick-meta">JPEG, PNG, or WebP / up to 12 MB</span>
+          <input required name="document" id="document-photo" type="file" accept="image/jpeg,image/png,image/webp" capture="environment">
+        </label>
+        <img id="photo-preview" class="photo-preview" alt="Selected document preview" hidden>
+        <p id="file-state" class="file-state" aria-live="polite">No photo selected</p>
+        <button id="send-photo" type="submit">Send to Laptop</button>
+      </form>
+      <p class="privacy-note">Uploads to this laptop over the local network.</p>
+    </section>
+  `, `<script defer src="/capture.js"></script>`);
+}
+
+function phoneResultPage(success: boolean, title: string, message: string) {
+  return phoneShell(title, `
+    <section class="mobile-result ${success ? "success" : "error"}">
+      <span class="result-mark" aria-hidden="true">${success ? "&#10003;" : "!"}</span>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(message)}</p>
+    </section>
+  `);
 }
 
 function requireCase(data: { cases: PatientCase[] }, caseId: string) {
@@ -99,84 +137,155 @@ export function createServer(dependencies: ServerDependencies) {
         imgSrc: ["'self'", "data:", "blob:"],
         styleSrc: ["'self'"],
         scriptSrc: ["'self'"],
-        connectSrc: ["'self'"]
+        connectSrc: ["'self'"],
+        "upgrade-insecure-requests": null
       }
     }
   }));
 
   app.get("/capture.css", (_request, response) => {
     response.type("text/css").send(`
-      * { box-sizing: border-box; }
-      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #eef3f4; color: #17242b; font-family: "Segoe UI", Arial, sans-serif; }
-      main { width: min(100% - 32px, 430px); border: 1px solid #d4dce0; border-radius: 8px; background: #fff; padding: 26px 20px; }
-      h1 { margin: 0 0 10px; font-size: 23px; letter-spacing: 0; }
-      p { margin: 0 0 24px; color: #596c73; }
+      :root { --surface: #fff; --page: #f1f5f5; --text: #15282e; --muted: #566a70; --line: #d2dcdf; --primary: #08776d; --primary-dark: #075b54; --error: #a23930; }
+      * { box-sizing: border-box; letter-spacing: 0; }
+      body { margin: 0; min-height: 100svh; background: var(--page); color: var(--text); font-family: "Segoe UI", Arial, sans-serif; }
+      .phone-shell { width: min(100%, 480px); min-height: 100svh; margin: 0 auto; padding: max(20px, env(safe-area-inset-top)) 18px calc(24px + env(safe-area-inset-bottom)); background: var(--surface); }
+      .phone-brand { height: 46px; display: flex; align-items: center; gap: 10px; margin-bottom: 34px; }
+      .phone-brand span { width: 38px; height: 38px; border-radius: 7px; display: grid; place-items: center; background: #e6f2ef; color: var(--primary-dark); font-size: 13px; font-weight: 700; }
+      .phone-brand strong { font-size: 17px; }
+      .eyebrow { margin: 0 0 9px; color: var(--primary); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+      h1 { margin: 0; font-size: 29px; line-height: 1.18; font-weight: 650; }
+      .lead { margin: 9px 0 30px; color: var(--muted); font-size: 16px; line-height: 1.45; }
       form { display: grid; gap: 14px; }
-      .pick { min-height: 58px; border: 1px dashed #98abb1; border-radius: 6px; padding: 18px 14px; display: grid; gap: 12px; font-weight: 600; }
-      input { width: 100%; }
-      button { height: 48px; border: 0; border-radius: 6px; color: #fff; background: #146b62; font: inherit; font-weight: 600; }
-      .mobile-complete { text-align: center; }
-      .mobile-complete p { margin-bottom: 0; }
+      .pick { position: relative; min-height: 116px; border: 1px dashed #8da7ad; border-radius: 7px; padding: 24px 18px; background: #f7faf9; display: grid; place-content: center; text-align: center; gap: 8px; color: var(--primary-dark); }
+      .pick:focus-within { outline: 2px solid #83bbb5; border-color: var(--primary); }
+      .pick-title { font-size: 16px; font-weight: 650; }
+      .pick-meta { color: var(--muted); font-size: 12px; }
+      .pick input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+      .photo-preview { width: 100%; max-height: 240px; object-fit: contain; border: 1px solid var(--line); border-radius: 7px; background: #f4f7f7; }
+      .file-state { min-height: 20px; margin: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+      .file-state.invalid { color: var(--error); }
+      button { height: 52px; margin-top: 8px; border: 0; border-radius: 7px; background: var(--primary); color: #fff; font: inherit; font-size: 16px; font-weight: 650; }
+      button:disabled { opacity: .62; }
+      button:active:not(:disabled) { background: var(--primary-dark); }
+      .privacy-note { margin: 25px 0 0; padding: 14px 0 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.45; }
+      .mobile-result { min-height: calc(100svh - 112px); display: grid; align-content: center; justify-items: center; text-align: center; padding: 20px; }
+      .result-mark { width: 54px; height: 54px; margin-bottom: 20px; display: grid; place-items: center; border-radius: 50%; background: #e6f4ef; color: var(--primary); font-size: 28px; font-weight: 650; }
+      .mobile-result.error .result-mark { background: #fbebea; color: var(--error); }
+      .mobile-result p { max-width: 310px; margin: 11px 0 0; color: var(--muted); font-size: 15px; line-height: 1.45; }
+    `);
+  });
+
+  app.get("/capture.js", (_request, response) => {
+    response.type("application/javascript").send(`
+      (() => {
+        const input = document.getElementById("document-photo");
+        const preview = document.getElementById("photo-preview");
+        const status = document.getElementById("file-state");
+        const form = document.getElementById("capture-form");
+        const button = document.getElementById("send-photo");
+        const maximumBytes = 12 * 1024 * 1024;
+        let previewUrl = "";
+        input.addEventListener("change", () => {
+          const file = input.files && input.files[0];
+          status.classList.remove("invalid");
+          button.disabled = false;
+          if (previewUrl) {
+            URL.revokeObjectURL(previewUrl);
+            previewUrl = "";
+          }
+          if (!file) {
+            status.textContent = "No photo selected";
+            preview.hidden = true;
+            return;
+          }
+          if (file.size > maximumBytes) {
+            status.textContent = "This photo is over 12 MB. Choose a smaller image or retake it.";
+            status.classList.add("invalid");
+            preview.hidden = true;
+            button.disabled = true;
+            return;
+          }
+          status.textContent = file.name;
+          previewUrl = URL.createObjectURL(file);
+          preview.src = previewUrl;
+          preview.hidden = false;
+        });
+        form.addEventListener("submit", () => {
+          button.disabled = true;
+          button.textContent = "Sending photo...";
+        });
+      })();
     `);
   });
 
   app.get("/capture/:token", async (request, response) => {
     try {
       if (!dependencies.store.isUnlocked()) {
-        response.status(423).send("The laptop app is locked. Ask the encoder to unlock it and create a new capture link.");
+        response.status(423).type("html").send(phoneResultPage(false, "Laptop is locked", "Unlock Encodex on the laptop, then create a new QR link."));
         return;
       }
       const data = await dependencies.store.readData();
       const token = parameter(request, "token");
       const patientCase = data.cases.find((entry) => entry.uploadTokenHash === hashToken(token));
       if (!patientCase || patientCase.uploadUsed || !patientCase.uploadExpiresAt || new Date(patientCase.uploadExpiresAt) <= now()) {
-        response.status(410).send("This capture link has expired or has already been used.");
+        response.status(410).type("html").send(phoneResultPage(false, "Link unavailable", "Create a new phone capture link on the laptop and try again."));
         return;
       }
-      response.type("html").send(phonePage(token));
+      response.type("html").send(capturePage(token));
     } catch (error) {
-      response.status(400).send((error as Error).message);
+      response.status(400).type("html").send(phoneResultPage(false, "Unable to open capture", (error as Error).message));
     }
   });
 
-  app.post("/capture/:token", upload.single("document"), async (request, response) => {
-    try {
-      if (!dependencies.store.isUnlocked()) {
-        response.status(423).send("The laptop app is locked.");
+  app.post("/capture/:token", (request, response) => {
+    upload.single("document")(request, response, (uploadError) => {
+      if (uploadError) {
+        const message = uploadError instanceof multer.MulterError && uploadError.code === "LIMIT_FILE_SIZE"
+          ? "This photo is over 12 MB. Choose a smaller image or retake it."
+          : "Choose one JPEG, PNG, or WebP document photo and try again.";
+        response.status(400).type("html").send(phoneResultPage(false, "Photo not sent", message));
         return;
       }
-      if (!request.file || !["image/jpeg", "image/png", "image/webp"].includes(request.file.mimetype)) {
-        response.status(400).send("Upload one JPEG, PNG, or WebP document photo.");
-        return;
-      }
-      const tokenHash = hashToken(parameter(request, "token"));
-      const data = await dependencies.store.readData();
-      const patientCase = data.cases.find((entry) => entry.uploadTokenHash === tokenHash);
-      if (!patientCase || patientCase.uploadUsed || !patientCase.uploadExpiresAt || new Date(patientCase.uploadExpiresAt) <= now()) {
-        response.status(410).send("This capture link has expired or has already been used.");
-        return;
-      }
-      const imageId = dependencies.store.newId();
-      await dependencies.store.storeImage(imageId, request.file.buffer);
-      if (patientCase.image) {
-        await dependencies.store.deleteImage(patientCase.image.id);
-      }
-      patientCase.image = {
-        id: imageId,
-        uploadedAt: iso(now()),
-        expiresAt: new Date(now().getTime() + IMAGE_RETENTION).toISOString(),
-        mimeType: request.file.mimetype
-      };
-      patientCase.uploadUsed = true;
-      patientCase.updatedAt = iso(now());
-      await dependencies.store.updateData((stored) => {
-        const destination = requireCase(stored, patientCase.id);
-        Object.assign(destination, patientCase);
-      });
-      response.type("html").send(phonePage(parameter(request, "token"), true));
-    } catch (error) {
-      response.status(400).send((error as Error).message);
-    }
+      void (async () => {
+        try {
+          if (!dependencies.store.isUnlocked()) {
+            response.status(423).type("html").send(phoneResultPage(false, "Laptop is locked", "Unlock Encodex on the laptop, then create a new QR link."));
+            return;
+          }
+          if (!request.file || !["image/jpeg", "image/png", "image/webp"].includes(request.file.mimetype)) {
+            response.status(400).type("html").send(phoneResultPage(false, "Photo not sent", "Choose one JPEG, PNG, or WebP document photo and try again."));
+            return;
+          }
+          const tokenHash = hashToken(parameter(request, "token"));
+          const data = await dependencies.store.readData();
+          const patientCase = data.cases.find((entry) => entry.uploadTokenHash === tokenHash);
+          if (!patientCase || patientCase.uploadUsed || !patientCase.uploadExpiresAt || new Date(patientCase.uploadExpiresAt) <= now()) {
+            response.status(410).type("html").send(phoneResultPage(false, "Link unavailable", "Create a new phone capture link on the laptop and try again."));
+            return;
+          }
+          const imageId = dependencies.store.newId();
+          await dependencies.store.storeImage(imageId, request.file.buffer);
+          if (patientCase.image) {
+            await dependencies.store.deleteImage(patientCase.image.id);
+          }
+          patientCase.image = {
+            id: imageId,
+            uploadedAt: iso(now()),
+            expiresAt: new Date(now().getTime() + IMAGE_RETENTION).toISOString(),
+            mimeType: request.file.mimetype
+          };
+          patientCase.uploadUsed = true;
+          patientCase.updatedAt = iso(now());
+          await dependencies.store.updateData((stored) => {
+            const destination = requireCase(stored, patientCase.id);
+            Object.assign(destination, patientCase);
+          });
+          response.type("html").send(phoneResultPage(true, "Photo sent", "Continue on the laptop to review the selected fields."));
+        } catch (error) {
+          response.status(400).type("html").send(phoneResultPage(false, "Photo not sent", (error as Error).message));
+        }
+      })();
+    });
   });
 
   app.use("/api", (request, response, next) => {

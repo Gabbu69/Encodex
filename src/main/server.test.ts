@@ -59,6 +59,45 @@ describe("selected-field privacy boundary", () => {
     }
   );
 
+  it("serves an HTTP-compatible phone upload page and stores the submitted photo", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "urinalysis", profileName: "Name Only", fieldIds: ["observed_name"] })
+      .expect(201);
+    const token = String(created.body.capture.url).split("/").pop()!;
+
+    const page = await agent.get(`/capture/${token}`).expect(200);
+    expect(page.headers["content-security-policy"]).not.toContain("upgrade-insecure-requests");
+    expect(page.text).toContain("Take or choose photo");
+    expect(page.text).toContain("/capture.js");
+
+    const uploaded = await agent
+      .post(`/capture/${token}`)
+      .attach("document", Buffer.from("fabricated image"), { filename: "form.jpg", contentType: "image/jpeg" })
+      .expect(200);
+    expect(uploaded.text).toContain("Photo sent");
+
+    const updated = await agent.get(`/api/cases/${created.body.patientCase.id}`).expect(200);
+    expect(updated.body.image).toEqual(expect.objectContaining({ mimeType: "image/jpeg" }));
+  });
+
+  it("returns a mobile-readable failure when a phone photo exceeds the upload limit", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "urinalysis", profileName: "Name Only", fieldIds: ["observed_name"] })
+      .expect(201);
+    const token = String(created.body.capture.url).split("/").pop()!;
+
+    const uploaded = await agent
+      .post(`/capture/${token}`)
+      .attach("document", Buffer.alloc(12 * 1024 * 1024 + 1), { filename: "too-large.jpg", contentType: "image/jpeg" })
+      .expect(400);
+    expect(uploaded.text).toContain("Photo not sent");
+    expect(uploaded.text).toContain("over 12 MB");
+  });
+
   it("retains and copies only the field selected before a Name Only capture", async () => {
     const { agent, clipboard } = await harness();
     const created = await agent
