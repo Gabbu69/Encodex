@@ -645,6 +645,43 @@ export function createServer(dependencies: ServerDependencies) {
     }
   });
 
+  app.put("/api/cases/:caseId/selection", async (request, response, next) => {
+    try {
+      const fieldIds = Array.isArray(request.body.fieldIds) ? [...new Set(request.body.fieldIds as string[])] : [];
+      const profileName = String(request.body.profileName ?? "").trim();
+      let updated: PatientCase | undefined;
+      await dependencies.store.updateData((data) => {
+        const patientCase = requireCase(data, parameter(request, "caseId"));
+        const previouslySelected = new Set(patientCase.selectedFieldIds);
+        if (!profileName || !validSelectedFields(patientCase.documentType, fieldIds)) {
+          throw new Error("Choose at least one supported field to keep in this capture.");
+        }
+        if (fieldIds.some((fieldId) => !previouslySelected.has(fieldId))) {
+          throw new Error("After capture, selected fields may be removed but new fields cannot be added.");
+        }
+        patientCase.selectedFieldIds = fieldIds;
+        patientCase.profileName = profileName;
+        patientCase.values = selectedValuesOnly(patientCase, patientCase.values);
+        if (!requiresMasterMatch(fieldIds)) {
+          patientCase.matchedPatientId = undefined;
+          patientCase.observedNameForMatch = undefined;
+        }
+        patientCase.updatedAt = iso(now());
+        if (patientCase.continuousCapture && patientCase.uploadTokenHash) {
+          const continuation = continuousCaptures.get(patientCase.uploadTokenHash);
+          if (continuation && !continuation.used) {
+            continuation.profileName = profileName;
+            continuation.selectedFieldIds = [...fieldIds];
+          }
+        }
+        updated = patientCase;
+      });
+      response.json(safeCase(updated!));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.put("/api/cases/:caseId/alignment", async (request, response, next) => {
     try {
       const rotation = Number(request.body.rotation);

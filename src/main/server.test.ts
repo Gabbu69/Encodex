@@ -185,6 +185,55 @@ describe("selected-field privacy boundary", () => {
       .expect(400);
   });
 
+  it("can reduce a captured record to Name Only without adding data and repeats that reduced setup", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "xray", profileName: "Patient Identity", fieldIds: ["observed_name", "age"], continuousCapture: true })
+      .expect(201);
+    const caseId = created.body.patientCase.id as string;
+    const token = String(created.body.capture.url).split("/").pop()!;
+
+    await capturePhoto(agent, created.body.capture.url);
+    await agent
+      .put(`/api/cases/${caseId}/review`)
+      .send({
+        values: {
+          observed_name: { value: "TEST PERSON", confirmed: true },
+          age: { value: "24", confirmed: true }
+        }
+      })
+      .expect(200);
+    const reduced = await agent
+      .put(`/api/cases/${caseId}/selection`)
+      .send({ profileName: "Name Only", fieldIds: ["observed_name"] })
+      .expect(200);
+    expect(reduced.body.profileName).toBe("Name Only");
+    expect(reduced.body.selectedFieldIds).toEqual(["observed_name"]);
+    expect(reduced.body.values).toEqual({ observed_name: expect.objectContaining({ value: "TEST PERSON", confirmed: true }) });
+
+    await agent
+      .post(`/capture/${token}/next`)
+      .attach("document", Buffer.from("next fabricated name page"), { filename: "next.jpg", contentType: "image/jpeg" })
+      .expect(200);
+    const cases = (await agent.get("/api/cases").expect(200)).body;
+    expect(cases[0].profileName).toBe("Name Only");
+    expect(cases[0].selectedFieldIds).toEqual(["observed_name"]);
+  });
+
+  it("cannot add a new field to an already captured selection", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "xray", profileName: "Name Only", fieldIds: ["observed_name"] })
+      .expect(201);
+
+    await agent
+      .put(`/api/cases/${created.body.patientCase.id}/selection`)
+      .send({ profileName: "Identity", fieldIds: ["observed_name", "age"] })
+      .expect(400);
+  });
+
   it("allows continuous capture after the previous reviewed case is deleted", async () => {
     const { agent } = await harness();
     const created = await agent

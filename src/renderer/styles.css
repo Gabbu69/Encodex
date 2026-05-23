@@ -615,6 +615,7 @@ input[type="checkbox"] {
 
 .capture-panel,
 .template-panel,
+.selection-panel,
 .match-panel,
 .image-panel {
   border: 1px solid var(--line);
@@ -703,6 +704,25 @@ input[type="checkbox"] {
   border-radius: 6px;
   background: #fff3dd;
   color: var(--warning);
+}
+
+.selection-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.selection-panel h3 {
+  font-size: 15px;
+  font-weight: 620;
+  margin-bottom: 6px;
+}
+
+.selection-panel p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .scan-action {

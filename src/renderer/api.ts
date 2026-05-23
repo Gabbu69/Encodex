@@ -54,6 +54,8 @@ export const api = {
     json<CapturePreset>("/api/presets", { method: "POST", body: JSON.stringify({ name, documentType, fieldIds }) }),
   changeDocumentType: (id: string, documentType: string) =>
     json<PatientCase>(`/api/cases/${id}/document-type`, { method: "PUT", body: JSON.stringify({ documentType }) }),
+  narrowSelection: (id: string, profileName: string, fieldIds: string[]) =>
+    json<PatientCase>(`/api/cases/${id}/selection`, { method: "PUT", body: JSON.stringify({ profileName, fieldIds }) }),
   align: (id: string, alignment: Alignment) =>
     json<PatientCase>(`/api/cases/${id}/alignment`, { method: "PUT", body: JSON.stringify(alignment) }),
   ocr: (id: string, fieldIds: string[]) =>

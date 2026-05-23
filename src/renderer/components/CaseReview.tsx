@@ -148,6 +148,25 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     }
   }
 
+  async function narrowToNameOnly() {
+    if (!window.confirm("Keep only Name on document for this photo and following continuous scans? Other selected fields for this capture will be removed.")) {
+      return;
+    }
+    setPending("selection");
+    setNotice("");
+    setClipboardReady(false);
+    setCandidates([]);
+    try {
+      const updated = await api.narrowSelection(patientCase.id, "Name Only", ["observed_name"]);
+      onCaseUpdate(updated);
+      setNotice("Name Only is active. Verify the scanned name, then select Review & Copy Name.");
+    } catch (caught) {
+      setNotice((caught as Error).message);
+    } finally {
+      setPending("");
+    }
+  }
+
   async function readTypedFields(effectiveAlignment = alignment) {
     setPending("ocr");
     setNotice("");
@@ -320,6 +339,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   );
   const readsOnlyName = visibleScanFields.length === 1 && visibleScanFields[0].id === "observed_name";
   const nameOnly = selectedFields.length === 1 && selectedFields[0].id === "observed_name";
+  const canNarrowToNameOnly = patientCase.selectedFieldIds.includes("observed_name") && !nameOnly;
   const allReviewed = patientCase.selectedFieldIds.every((fieldId) => patientCase.values[fieldId]?.confirmed);
 
   useEffect(() => {
@@ -404,6 +424,17 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                 ))}
               </div>
               <p>Choose the paper type in the image before reading. This changes where selected fields are scanned; it does not collect additional fields.</p>
+            </div>
+          )}
+          {patientCase.image && canNarrowToNameOnly && (
+            <div className="selection-panel">
+              <div>
+                <h3>Need Only The Written Name?</h3>
+                <p>Reduce this captured record to the name field only. Removed fields cannot be added back from this photo.</p>
+              </div>
+              <button className="secondary command" disabled={pending === "selection"} onClick={narrowToNameOnly}>
+                Use Name Only
+              </button>
             </div>
           )}
           {patientCase.image && hasOcr && (
