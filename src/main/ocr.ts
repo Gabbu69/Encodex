@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import sharp from "sharp";
 import Tesseract from "tesseract.js";
-import type { Alignment, DocumentType, FieldDefinition } from "../shared/domain.js";
+import type { Alignment, DocumentType, FieldDefinition, Region } from "../shared/domain.js";
 
 const require = createRequire(import.meta.url);
 const englishData = require("@tesseract.js-data/eng") as { langPath: string; gzip: boolean };
@@ -158,7 +158,8 @@ export class LocalOcr {
     bytes: Buffer,
     documentType: DocumentType,
     fields: FieldDefinition[],
-    alignment: Alignment
+    alignment: Alignment,
+    regionOverrides: Partial<Record<string, Region>> = {}
   ): Promise<OcrSuggestion[]> {
     const aligned = await alignDocument(bytes, alignment);
     const metadata = await sharp(aligned).metadata();
@@ -167,17 +168,32 @@ export class LocalOcr {
     }
     const worker = await this.getWorker();
     const suggestions: OcrSuggestion[] = [];
+    let rotated: Buffer | undefined;
     for (const field of fields) {
-      const region = field.region?.[documentType];
+      const override = regionOverrides[field.id];
+      const region = override ?? field.region?.[documentType];
       if (!region) {
         continue;
       }
-      const left = Math.round(region.left * metadata.width);
-      const top = Math.round(region.top * metadata.height);
-      const width = Math.max(1, Math.round(region.width * metadata.width));
-      const height = Math.max(1, Math.round(region.height * metadata.height));
+      let sourceImage = aligned;
+      let sourceWidth = metadata.width;
+      let sourceHeight = metadata.height;
+      if (override) {
+        rotated ??= await sharp(bytes).rotate(alignment.rotation).png().toBuffer();
+        const rotatedMetadata = await sharp(rotated).metadata();
+        if (!rotatedMetadata.width || !rotatedMetadata.height) {
+          throw new Error("Unable to read captured image dimensions.");
+        }
+        sourceImage = rotated;
+        sourceWidth = rotatedMetadata.width;
+        sourceHeight = rotatedMetadata.height;
+      }
+      const left = Math.round(region.left * sourceWidth);
+      const top = Math.round(region.top * sourceHeight);
+      const width = Math.max(1, Math.round(region.width * sourceWidth));
+      const height = Math.max(1, Math.round(region.height * sourceHeight));
       if (field.id === "observed_name") {
-        const nameSuggestion = await this.recognizeName(worker, aligned, { left, top, width, height });
+        const nameSuggestion = await this.recognizeName(worker, sourceImage, { left, top, width, height });
         suggestions.push({
           fieldId: field.id,
           ...nameSuggestion,
@@ -188,7 +204,7 @@ export class LocalOcr {
         continue;
       }
       const enlarge = MULTILINE_FIELD_IDS.has(field.id) || ENLARGED_SINGLE_LINE_FIELD_IDS.has(field.id);
-      let cropPipeline = sharp(aligned)
+      let cropPipeline = sharp(sourceImage)
         .extract({ left, top, width, height })
         .grayscale()
         .normalize();

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import request from "supertest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { VaultStore } from "./crypto-store.js";
 import { createServer } from "./server.js";
 
@@ -12,7 +12,7 @@ afterEach(async () => {
   await Promise.all(folders.splice(0).map((folder) => rm(folder, { recursive: true, force: true })));
 });
 
-async function harness() {
+async function harness(ocr = { async recognizeSelected() { return []; } }) {
   const folder = await mkdtemp(path.join(tmpdir(), "medical-api-"));
   folders.push(folder);
   const clipboard = { value: "", writeText(value: string) { this.value = value; }, clear() { this.value = ""; } };
@@ -20,7 +20,7 @@ async function harness() {
     store: new VaultStore(folder),
     clipboard,
     captureOrigin: () => "http://192.168.1.2:4179",
-    ocr: { async recognizeSelected() { return []; } }
+    ocr
   });
   const agent = request.agent(app);
   await agent.post("/api/setup").send({ password: "correct horse battery staple" }).expect(201);
@@ -231,6 +231,44 @@ describe("selected-field privacy boundary", () => {
     await agent
       .put(`/api/cases/${created.body.patientCase.id}/selection`)
       .send({ profileName: "Identity", fieldIds: ["observed_name", "age"] })
+      .expect(400);
+  });
+
+  it("reads only a manually marked name rectangle for a Name Only capture", async () => {
+    const recognizeSelected = vi.fn(async () => [{ fieldId: "observed_name", text: "SAMPLE, TEST NAME", confidence: 93 }]);
+    const { agent } = await harness({ recognizeSelected });
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "xray", profileName: "Name Only", fieldIds: ["observed_name"] })
+      .expect(201);
+    await capturePhoto(agent, created.body.capture.url);
+    const nameRegion = { left: 0.24, top: 0.43, width: 0.32, height: 0.05 };
+
+    await agent
+      .post(`/api/cases/${created.body.patientCase.id}/ocr`)
+      .send({ fieldIds: ["observed_name"], nameRegion })
+      .expect(200);
+
+    expect(recognizeSelected).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      "xray",
+      [expect.objectContaining({ id: "observed_name" })],
+      expect.any(Object),
+      { observed_name: nameRegion }
+    );
+  });
+
+  it("rejects a marked name rectangle when the name was not selected", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "urinalysis", profileName: "Urinalysis Results", fieldIds: ["color"] })
+      .expect(201);
+    await capturePhoto(agent, created.body.capture.url);
+
+    await agent
+      .post(`/api/cases/${created.body.patientCase.id}/ocr`)
+      .send({ fieldIds: ["color"], nameRegion: { left: 0.2, top: 0.2, width: 0.2, height: 0.04 } })
       .expect(400);
   });
 

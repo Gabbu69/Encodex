@@ -6,7 +6,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import helmet from "helmet";
 import multer from "multer";
 import QRCode from "qrcode";
-import type { CapturePreset, DocumentType, PatientCase, StoredValue } from "../shared/domain.js";
+import type { CapturePreset, DocumentType, PatientCase, Region, StoredValue } from "../shared/domain.js";
 import { DEFAULT_ALIGNMENT } from "../shared/domain.js";
 import { exportCasesCsv } from "../shared/csv.js";
 import { BUILT_IN_PRESETS, FIELDS, isDocumentType, requiresMasterMatch, sourceForDocument, supportsTypedName, validSelectedFields } from "../shared/fields.js";
@@ -25,7 +25,8 @@ interface OcrPort {
     bytes: Buffer,
     documentType: DocumentType,
     fields: typeof FIELDS,
-    alignment: PatientCase["alignment"]
+    alignment: PatientCase["alignment"],
+    regionOverrides?: Partial<Record<string, Region>>
   ): Promise<OcrSuggestion[]>;
 }
 
@@ -751,6 +752,31 @@ export function createServer(dependencies: ServerDependencies) {
         response.status(400).json({ error: "OCR is restricted to the selected capture profile." });
         return;
       }
+      const suppliedNameRegion = request.body.nameRegion as Partial<Region> | undefined;
+      let nameRegion: Region | undefined;
+      if (suppliedNameRegion) {
+        const { left, top, width, height } = suppliedNameRegion;
+        if (
+          !permitted.has("observed_name")
+          || !requested.includes("observed_name")
+          || [left, top, width, height].some((value) => !Number.isFinite(value))
+          || Number(left) < 0
+          || Number(top) < 0
+          || Number(width) < 0.02
+          || Number(height) < 0.005
+          || Number(left) + Number(width) > 1
+          || Number(top) + Number(height) > 1
+        ) {
+          response.status(400).json({ error: "The selected name scan area is invalid." });
+          return;
+        }
+        nameRegion = {
+          left: Number(left),
+          top: Number(top),
+          width: Number(width),
+          height: Number(height)
+        };
+      }
       const ocrFields = requested.flatMap((fieldId) => {
         const field = FIELDS.find((entry) => entry.id === fieldId);
         return field && sourceForDocument(field, patientCase.documentType) === "ocr" ? [field] : [];
@@ -759,7 +785,8 @@ export function createServer(dependencies: ServerDependencies) {
         await dependencies.store.readImage(patientCase.image.id),
         patientCase.documentType,
         ocrFields,
-        patientCase.alignment
+        patientCase.alignment,
+        nameRegion ? { observed_name: nameRegion } : undefined
       );
       response.json({ suggestions });
     } catch (error) {

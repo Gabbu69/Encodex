@@ -1,4 +1,4 @@
-import type { Alignment, CapturePreset, FieldDefinition, MatchCandidate, PatientCase } from "../shared/domain";
+import type { Alignment, CapturePreset, FieldDefinition, MatchCandidate, PatientCase, Region } from "../shared/domain";
 
 export interface AppConfig {
   fields: FieldDefinition[];
@@ -60,10 +60,10 @@ export const api = {
     json<{ patientCase: PatientCase; adjusted: boolean }>(`/api/cases/${id}/auto-fit`, { method: "POST" }),
   align: (id: string, alignment: Alignment) =>
     json<PatientCase>(`/api/cases/${id}/alignment`, { method: "PUT", body: JSON.stringify(alignment) }),
-  ocr: (id: string, fieldIds: string[]) =>
+  ocr: (id: string, fieldIds: string[], nameRegion?: Region) =>
     json<{ suggestions: Array<{ fieldId: string; text: string; confidence: number; qualityWarning?: string }> }>(`/api/cases/${id}/ocr`, {
       method: "POST",
-      body: JSON.stringify({ fieldIds })
+      body: JSON.stringify({ fieldIds, nameRegion })
     }),
   review: (id: string, values: PatientCase["values"]) =>
     json<PatientCase>(`/api/cases/${id}/review`, { method: "PUT", body: JSON.stringify({ values }) }),

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   AlignCenter,
   CheckCircle2,
@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import type { CaptureLink } from "../api";
 import { api } from "../api";
-import type { DocumentType, FieldDefinition, MatchCandidate, PatientCase, StoredValue } from "../../shared/domain";
+import type { DocumentType, FieldDefinition, MatchCandidate, PatientCase, Region, StoredValue } from "../../shared/domain";
 import { DOCUMENT_TYPES, documentLabel, requiresMasterMatch, sourceForDocument, supportsTypedName } from "../../shared/fields";
 
 interface CaseReviewProps {
@@ -40,11 +40,20 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   const [pending, setPending] = useState("");
   const [notice, setNotice] = useState("");
   const [clipboardReady, setClipboardReady] = useState(false);
+  const [nameRegion, setNameRegion] = useState<Region | undefined>();
+  const [selectingNameRegion, setSelectingNameRegion] = useState(false);
   const automaticReadImage = useRef("");
+  const nameRegionStart = useRef<{ x: number; y: number } | undefined>(undefined);
 
   useEffect(() => {
     setClipboardReady(false);
   }, [patientCase.id]);
+
+  useEffect(() => {
+    setNameRegion(undefined);
+    setSelectingNameRegion(false);
+    nameRegionStart.current = undefined;
+  }, [patientCase.id, patientCase.documentType, patientCase.image?.id]);
 
   useEffect(() => {
     setDraft(
@@ -158,8 +167,9 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     setCandidates([]);
     try {
       const updated = await api.narrowSelection(patientCase.id, "Name Only", ["observed_name"]);
+      automaticReadImage.current = "";
       onCaseUpdate(updated);
-      setNotice("Name Only is active. Verify the scanned name, then select Review & Copy Name.");
+      setNotice("Name Only is active. Reading the written name now.");
     } catch (caught) {
       setNotice((caught as Error).message);
     } finally {
@@ -167,7 +177,63 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     }
   }
 
-  async function readTypedFields(effectiveAlignment = alignment, forceScreenFit = false) {
+  function pointInImage(event: ReactPointerEvent<HTMLDivElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width)),
+      y: Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height))
+    };
+  }
+
+  function beginNameSelection(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!selectingNameRegion) {
+      return;
+    }
+    const point = pointInImage(event);
+    nameRegionStart.current = point;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setNameRegion({ left: point.x, top: point.y, width: 0.001, height: 0.001 });
+  }
+
+  function updateNameSelection(event: ReactPointerEvent<HTMLDivElement>) {
+    const start = nameRegionStart.current;
+    if (!start || !selectingNameRegion) {
+      return;
+    }
+    const point = pointInImage(event);
+    setNameRegion({
+      left: Math.min(start.x, point.x),
+      top: Math.min(start.y, point.y),
+      width: Math.abs(point.x - start.x),
+      height: Math.abs(point.y - start.y)
+    });
+  }
+
+  function finishNameSelection(event: ReactPointerEvent<HTMLDivElement>) {
+    const start = nameRegionStart.current;
+    if (!start || !selectingNameRegion) {
+      return;
+    }
+    const point = pointInImage(event);
+    const selectedRegion = {
+      left: Math.min(start.x, point.x),
+      top: Math.min(start.y, point.y),
+      width: Math.abs(point.x - start.x),
+      height: Math.abs(point.y - start.y)
+    };
+    nameRegionStart.current = undefined;
+    setSelectingNameRegion(false);
+    if (selectedRegion.width < 0.02 || selectedRegion.height < 0.005) {
+      setNameRegion(undefined);
+      setNotice("Name area was too small. Drag a box around the printed name.");
+      return;
+    }
+    setNameRegion(selectedRegion);
+    setNotice("Reading only the marked name area.");
+    void readTypedFields(alignment, false, selectedRegion);
+  }
+
+  async function readTypedFields(effectiveAlignment = alignment, forceScreenFit = false, selectedNameRegion: Region | null = nameRegion ?? null) {
     setPending("ocr");
     setNotice("");
     setClipboardReady(false);
@@ -186,12 +252,12 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
       if (requiresMasterMatch(patientCase.selectedFieldIds) && supportsTypedName(patientCase.documentType)) {
         requested.push("observed_name");
       }
-      let result = await api.ocr(patientCase.id, [...new Set(requested)]);
+      let result = await api.ocr(patientCase.id, [...new Set(requested)], selectedNameRegion ?? undefined);
       let automaticallyFitted = false;
       let fitWasRejected = false;
       let noScreenFrameFound = false;
       const firstName = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name");
-      if (patientCase.documentType === "xray" && firstName && (forceScreenFit || !firstName.text || firstName.confidence < 65)) {
+      if (!selectedNameRegion && patientCase.documentType === "xray" && firstName && (forceScreenFit || !firstName.text || firstName.confidence < 65)) {
         const fitted = await api.autoFit(patientCase.id);
         if (fitted.adjusted) {
           const fittedResult = await api.ocr(patientCase.id, [...new Set(requested)]);
@@ -237,18 +303,25 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
       if (readsOnlyName && nameOnly) {
         const nameReading = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name");
         const recognizedName = nameReading?.text;
+        if (recognizedName) {
+          setSelectingNameRegion(false);
+        } else if (!selectedNameRegion) {
+          setSelectingNameRegion(true);
+        }
         const fitGuidance = automaticallyFitted
           ? " The screen border was removed automatically before retrying."
           : fitWasRejected
             ? " Automatic screen fitting was not kept because it did not improve the name reading."
             : noScreenFrameFound
               ? " No screen border was detected; capture the physical paper close-up."
+              : selectedNameRegion
+                ? " Only the marked name area was read."
               : "";
         const qualityGuidance = nameReading?.qualityWarning ? ` ${nameReading.qualityWarning}` : "";
         setNotice(
           recognizedName
             ? `Name detected. Verify its spelling, then select Review & Copy Name.${fitGuidance}${qualityGuidance}`
-            : `The name was not clear. Type it above, then select Review & Copy Name.${fitGuidance}${qualityGuidance}`
+            : `The name was not clear. Drag a box over the printed name on the photo, or type it above, then select Review & Copy Name.${fitGuidance}${qualityGuidance}`
         );
       } else if (readsOnlyName) {
         const nameReading = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name");
@@ -259,6 +332,8 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
             ? " Automatic screen fitting was not kept because it did not improve the name reading."
             : noScreenFrameFound
               ? " No screen border was detected; capture the physical paper close-up."
+              : selectedNameRegion
+                ? " Only the marked name area was read."
               : "";
         const qualityGuidance = nameReading?.qualityWarning ? ` ${nameReading.qualityWarning}` : "";
         setNotice(
@@ -393,7 +468,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   const allReviewed = patientCase.selectedFieldIds.every((fieldId) => patientCase.values[fieldId]?.confirmed);
 
   useEffect(() => {
-    const automaticReadKey = patientCase.image ? `${patientCase.image.id}:${patientCase.documentType}` : "";
+    const automaticReadKey = patientCase.image ? `${patientCase.image.id}:${patientCase.documentType}:${patientCase.selectedFieldIds.join(",")}` : "";
     if (!patientCase.image || !hasOcr || automaticReadImage.current === automaticReadKey) {
       return;
     }
@@ -401,7 +476,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     if (Object.keys(patientCase.values).length === 0) {
       void readTypedFields(patientCase.alignment);
     }
-  }, [patientCase.id, patientCase.documentType, patientCase.image?.id, hasOcr]);
+  }, [patientCase.id, patientCase.documentType, patientCase.image?.id, patientCase.selectedFieldIds.join(","), hasOcr]);
 
   return (
     <section className="content-view review-view">
@@ -482,18 +557,19 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                 <h3>Need Only The Written Name?</h3>
                 <p>Reduce this captured record to the name field only. Removed fields cannot be added back from this photo.</p>
               </div>
-              <button className="secondary command" disabled={pending === "selection"} onClick={narrowToNameOnly}>
-                Use Name Only
+              <button className="primary command" disabled={pending === "selection"} onClick={narrowToNameOnly}>
+                {pending === "selection" ? <LoaderCircle className="spin" size={17} /> : <ScanText size={17} />}
+                Switch To Name Only And Read
               </button>
             </div>
           )}
-          {patientCase.image && hasOcr && (
+          {patientCase.image && hasOcr && !(canNarrowToNameOnly && masterPatientCount === 0) && (
             <button className="primary command scan-action" disabled={pending === "ocr"} onClick={() => void readTypedFields()}>
               {pending === "ocr" ? <LoaderCircle className="spin" size={17} /> : <ScanText size={17} />}
-              {readsOnlyName ? "Read Selected Name Only" : "Read Selected Typed Fields"}
+              {readsOnlyName ? (nameRegion ? "Read Name From Marked Area" : "Read Selected Name Only") : "Read Selected Typed Fields"}
             </button>
           )}
-          {needsMatch && (
+          {needsMatch && !(canNarrowToNameOnly && masterPatientCount === 0) && (
             <div className="match-panel">
               <div className="band-header">
                 <h3>Approved Patient Match</h3>
@@ -600,7 +676,13 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
           {patientCase.image ? (
             <>
               <div className="document-preview">
-                <div className="document-canvas" style={{ transform: `rotate(${alignment.rotation}deg)` }}>
+                <div
+                  className={`document-canvas ${selectingNameRegion ? "selecting-name-region" : ""}`}
+                  style={{ transform: `rotate(${alignment.rotation}deg)` }}
+                  onPointerDown={beginNameSelection}
+                  onPointerMove={updateNameSelection}
+                  onPointerUp={finishNameSelection}
+                >
                   <img
                     alt="Captured document"
                     src={`/api/cases/${patientCase.id}/image?v=${encodeURIComponent(patientCase.updatedAt)}`}
@@ -614,7 +696,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                       left: `${alignment.left * 100}%`
                     }}
                   />
-                  {visibleScanFields.map((field) => {
+                  {visibleScanFields.filter((field) => field.id !== "observed_name" || !nameRegion).map((field) => {
                     const region = field.region![patientCase.documentType]!;
                     const availableWidth = 1 - alignment.left - alignment.right;
                     const availableHeight = 1 - alignment.top - alignment.bottom;
@@ -633,6 +715,18 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                       />
                     );
                   })}
+                  {nameRegion && (
+                    <div
+                      className="selected-scan-guide manual-name-guide"
+                      title="Marked name scan area"
+                      style={{
+                        top: `${nameRegion.top * 100}%`,
+                        left: `${nameRegion.left * 100}%`,
+                        width: `${nameRegion.width * 100}%`,
+                        height: `${nameRegion.height * 100}%`
+                      }}
+                    />
+                  )}
                 </div>
               </div>
               <div className="alignment-controls">
@@ -660,11 +754,39 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                   Apply
                 </button>
               </div>
-              {patientCase.documentType === "xray" && readsOnlyName && (
-                <button className="secondary command fit-page-action" onClick={() => void readTypedFields(alignment, true)} disabled={pending === "ocr"}>
-                  <ScanText size={16} />
-                  Fit Screen Photo And Read Name
-                </button>
+              {readsOnlyName && (
+                <div className="name-area-actions">
+                  <button
+                    className={selectingNameRegion ? "primary command" : "secondary command"}
+                    onClick={() => {
+                      setSelectingNameRegion((current) => !current);
+                      setNotice(selectingNameRegion ? "" : "Drag a box around the printed name in the photo.");
+                    }}
+                    disabled={pending === "ocr"}
+                  >
+                    <ScanText size={16} />
+                    {selectingNameRegion ? "Cancel Name Selection" : "Select Name Area On Photo"}
+                  </button>
+                  {nameRegion && (
+                    <button
+                      className="secondary command"
+                      onClick={() => {
+                        setNameRegion(undefined);
+                        void readTypedFields(alignment, patientCase.documentType === "xray", null);
+                      }}
+                      disabled={pending === "ocr"}
+                    >
+                      <RefreshCw size={16} />
+                      Try Automatic Area
+                    </button>
+                  )}
+                  {patientCase.documentType === "xray" && !nameRegion && (
+                    <button className="secondary command" onClick={() => void readTypedFields(alignment, true, null)} disabled={pending === "ocr"}>
+                      <ScanText size={16} />
+                      Fit Screen Photo And Read Name
+                    </button>
+                  )}
+                </div>
               )}
             </>
           ) : (
