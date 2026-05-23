@@ -141,6 +141,50 @@ describe("selected-field privacy boundary", () => {
     await agent.get(`/capture/${token}/next`).expect(410);
   });
 
+  it("changes a captured name-only form template and carries it to the next continuous paper", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "urinalysis", profileName: "Name Only", fieldIds: ["observed_name"], continuousCapture: true })
+      .expect(201);
+    const caseId = created.body.patientCase.id as string;
+    const token = String(created.body.capture.url).split("/").pop()!;
+
+    await agent
+      .post(`/capture/${token}`)
+      .attach("document", Buffer.from("fabricated radiology page"), { filename: "radiology.jpg", contentType: "image/jpeg" })
+      .expect(200);
+    const changed = await agent
+      .put(`/api/cases/${caseId}/document-type`)
+      .send({ documentType: "xray" })
+      .expect(200);
+    expect(changed.body.documentType).toBe("xray");
+    expect(changed.body.selectedFieldIds).toEqual(["observed_name"]);
+    expect(changed.body.alignment).toMatchObject({ top: 0.16, bottom: 0.1 });
+    expect(changed.body.image).toBeDefined();
+
+    await agent
+      .post(`/capture/${token}/next`)
+      .attach("document", Buffer.from("next fabricated radiology page"), { filename: "next.jpg", contentType: "image/jpeg" })
+      .expect(200);
+    const cases = (await agent.get("/api/cases").expect(200)).body;
+    expect(cases).toHaveLength(2);
+    expect(cases.every((patientCase: { documentType: string }) => patientCase.documentType === "xray")).toBe(true);
+  });
+
+  it("does not switch a case to a form that cannot contain its selected fields", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "urinalysis", profileName: "Urinalysis Results", fieldIds: ["color"] })
+      .expect(201);
+
+    await agent
+      .put(`/api/cases/${created.body.patientCase.id}/document-type`)
+      .send({ documentType: "xray" })
+      .expect(400);
+  });
+
   it("allows continuous capture after the previous reviewed case is deleted", async () => {
     const { agent } = await harness();
     const created = await agent

@@ -615,6 +615,36 @@ export function createServer(dependencies: ServerDependencies) {
     }
   });
 
+  app.put("/api/cases/:caseId/document-type", async (request, response, next) => {
+    try {
+      const documentType = request.body.documentType as DocumentType;
+      if (!isDocumentType(documentType)) {
+        response.status(400).json({ error: "Choose one of the supported form types." });
+        return;
+      }
+      let updated: PatientCase | undefined;
+      await dependencies.store.updateData((data) => {
+        const patientCase = requireCase(data, parameter(request, "caseId"));
+        if (!validSelectedFields(documentType, patientCase.selectedFieldIds)) {
+          throw new Error("This form type does not support all fields selected for this capture. Start a new capture with the needed fields.");
+        }
+        patientCase.documentType = documentType;
+        patientCase.alignment = initialAlignment(documentType);
+        patientCase.updatedAt = iso(now());
+        if (patientCase.continuousCapture && patientCase.uploadTokenHash) {
+          const continuation = continuousCaptures.get(patientCase.uploadTokenHash);
+          if (continuation && !continuation.used) {
+            continuation.documentType = documentType;
+          }
+        }
+        updated = patientCase;
+      });
+      response.json(safeCase(updated!));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.put("/api/cases/:caseId/alignment", async (request, response, next) => {
     try {
       const rotation = Number(request.body.rotation);

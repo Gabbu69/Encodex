@@ -52,6 +52,8 @@ export const api = {
   createCaptureLink: (id: string) => json<CaptureLink>(`/api/cases/${id}/capture-link`, { method: "POST" }),
   savePreset: (name: string, documentType: string, fieldIds: string[]) =>
     json<CapturePreset>("/api/presets", { method: "POST", body: JSON.stringify({ name, documentType, fieldIds }) }),
+  changeDocumentType: (id: string, documentType: string) =>
+    json<PatientCase>(`/api/cases/${id}/document-type`, { method: "PUT", body: JSON.stringify({ documentType }) }),
   align: (id: string, alignment: Alignment) =>
     json<PatientCase>(`/api/cases/${id}/alignment`, { method: "PUT", body: JSON.stringify(alignment) }),
   ocr: (id: string, fieldIds: string[]) =>

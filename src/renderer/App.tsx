@@ -132,7 +132,7 @@ export function App() {
         </div>
         <nav>
           <button className={page === "cases" || page === "review" ? "current" : ""} onClick={() => setPage("cases")}>
-            <ClipboardList size={19} /> Cases
+            <ClipboardList size={19} /> Encoding List
           </button>
           <button className={page === "new" ? "current" : ""} onClick={() => setPage("new")}>
             <FilePlus2 size={19} /> New Capture

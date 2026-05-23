@@ -13,8 +13,8 @@ import {
 } from "lucide-react";
 import type { CaptureLink } from "../api";
 import { api } from "../api";
-import type { FieldDefinition, MatchCandidate, PatientCase, StoredValue } from "../../shared/domain";
-import { documentLabel, requiresMasterMatch, sourceForDocument, supportsTypedName } from "../../shared/fields";
+import type { DocumentType, FieldDefinition, MatchCandidate, PatientCase, StoredValue } from "../../shared/domain";
+import { DOCUMENT_TYPES, documentLabel, requiresMasterMatch, sourceForDocument, supportsTypedName } from "../../shared/fields";
 
 interface CaseReviewProps {
   patientCase: PatientCase;
@@ -125,6 +125,29 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     }
   }
 
+  async function changeDocumentType(documentType: DocumentType) {
+    if (documentType === patientCase.documentType) {
+      return;
+    }
+    setPending("template");
+    setNotice("");
+    setClipboardReady(false);
+    setCandidates([]);
+    try {
+      const updated = await api.changeDocumentType(patientCase.id, documentType);
+      onCaseUpdate(updated);
+      setNotice(
+        Object.keys(patientCase.values).length === 0
+          ? `Form changed to ${documentLabel(documentType)}. Reading only the selected typed fields from the new location.`
+          : `Form changed to ${documentLabel(documentType)}. Reread or edit the selected fields before copying.`
+      );
+    } catch (caught) {
+      setNotice((caught as Error).message);
+    } finally {
+      setPending("");
+    }
+  }
+
   async function readTypedFields(effectiveAlignment = alignment) {
     setPending("ocr");
     setNotice("");
@@ -160,12 +183,19 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
           setTransientBirthdate(suggestion.text);
         }
       });
-      if (readsOnlyName) {
+      if (readsOnlyName && nameOnly) {
         const recognizedName = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name")?.text;
         setNotice(
           recognizedName
             ? "Name detected. Verify its spelling, then select Review & Copy Name."
             : "The name was not clear. Type it above, then select Review & Copy Name."
+        );
+      } else if (readsOnlyName) {
+        const recognizedName = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name")?.text;
+        setNotice(
+          recognizedName
+            ? "Name detected. Check the spelling, mark Name on document as Reviewed, then save selected values."
+            : "The name was not clear. Type it, mark Name on document as Reviewed, then save selected values."
         );
       } else {
         setNotice("Typed field suggestions are ready for confirmation.");
@@ -183,7 +213,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     try {
       const updated = await api.review(patientCase.id, draft);
       onCaseUpdate(updated);
-      setNotice("Selected fields saved.");
+      setNotice("Selected fields saved. Reviewed names appear in the Encoding List and can be opened again for editing.");
     } catch (caught) {
       setNotice((caught as Error).message);
     } finally {
@@ -293,14 +323,15 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   const allReviewed = patientCase.selectedFieldIds.every((fieldId) => patientCase.values[fieldId]?.confirmed);
 
   useEffect(() => {
-    if (!patientCase.image || !hasOcr || automaticReadImage.current === patientCase.image.id) {
+    const automaticReadKey = patientCase.image ? `${patientCase.image.id}:${patientCase.documentType}` : "";
+    if (!patientCase.image || !hasOcr || automaticReadImage.current === automaticReadKey) {
       return;
     }
-    automaticReadImage.current = patientCase.image.id;
+    automaticReadImage.current = automaticReadKey;
     if (Object.keys(patientCase.values).length === 0) {
       void readTypedFields(patientCase.alignment);
     }
-  }, [patientCase.id, patientCase.image?.id, hasOcr]);
+  }, [patientCase.id, patientCase.documentType, patientCase.image?.id, hasOcr]);
 
   return (
     <section className="content-view review-view">
@@ -354,6 +385,27 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
               )}
             </div>
           )}
+          {patientCase.image && (
+            <div className="template-panel">
+              <div className="band-header">
+                <h3>Form Shown In Photo</h3>
+                <span className="muted">Sets the correct scan area</span>
+              </div>
+              <div className="template-switch" role="radiogroup" aria-label="Form shown in uploaded photo">
+                {DOCUMENT_TYPES.map((option) => (
+                  <button
+                    key={option}
+                    className={patientCase.documentType === option ? "active" : ""}
+                    disabled={pending === "template"}
+                    onClick={() => void changeDocumentType(option)}
+                  >
+                    {documentLabel(option)}
+                  </button>
+                ))}
+              </div>
+              <p>Choose the paper type in the image before reading. This changes where selected fields are scanned; it does not collect additional fields.</p>
+            </div>
+          )}
           {patientCase.image && hasOcr && (
             <button className="primary command scan-action" disabled={pending === "ocr"} onClick={() => void readTypedFields()}>
               {pending === "ocr" ? <LoaderCircle className="spin" size={17} /> : <ScanText size={17} />}
@@ -366,6 +418,9 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                 <h3>Approved Patient Match</h3>
                 <span className="muted">{masterPatientCount} master records</span>
               </div>
+              {masterPatientCount === 0 && (
+                <p className="match-tip">To correct an official name, import the approved patient master first. To copy only the written name, use the Name Only profile.</p>
+              )}
               <div className="match-inputs">
                 <label className="form-field">
                   Name for matching

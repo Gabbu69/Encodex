@@ -1,4 +1,4 @@
-import { ClipboardList, FilePlus2, FolderOpen } from "lucide-react";
+import { ClipboardList, FilePlus2, PencilLine } from "lucide-react";
 import type { PatientCase } from "../../shared/domain";
 import { documentLabel } from "../../shared/fields";
 
@@ -13,8 +13,8 @@ export function CasesView({ cases, onNew, onOpen }: CasesViewProps) {
     <section className="content-view">
       <header className="view-header">
         <div>
-          <h2>Cases</h2>
-          <p>{cases.length} open case{cases.length === 1 ? "" : "s"}</p>
+          <h2>Encoding List</h2>
+          <p>{cases.length} record{cases.length === 1 ? "" : "s"} waiting for official entry</p>
         </div>
         <button className="primary command" onClick={onNew}>
           <FilePlus2 size={17} />
@@ -33,24 +33,36 @@ export function CasesView({ cases, onNew, onOpen }: CasesViewProps) {
       ) : (
         <div className="case-table" role="table">
           <div className="case-table-head" role="row">
+            <span>Reviewed person name</span>
             <span>Form</span>
             <span>Capture profile</span>
-            <span>Selected values</span>
             <span>Status</span>
             <span />
           </div>
           {cases.map((patientCase) => {
             const reviewed = patientCase.selectedFieldIds.filter((fieldId) => patientCase.values[fieldId]?.confirmed).length;
+            const officialName = patientCase.values.confirmed_official_name?.confirmed
+              ? patientCase.values.confirmed_official_name.value
+              : "";
+            const observedName = patientCase.values.observed_name?.confirmed
+              ? patientCase.values.observed_name.value
+              : "";
+            const displayedName = officialName || observedName;
+            const nameWasSelected = patientCase.selectedFieldIds.includes("observed_name") || patientCase.selectedFieldIds.includes("confirmed_official_name");
             return (
               <div className="case-row" role="row" key={patientCase.id}>
+                <div className="case-person">
+                  <strong>{displayedName || (nameWasSelected ? "Awaiting reviewed name" : "Name not selected")}</strong>
+                  {displayedName && <small>{officialName ? "Confirmed official name" : "Reviewed document name"}</small>}
+                </div>
                 <strong>{documentLabel(patientCase.documentType)}</strong>
                 <span>{patientCase.profileName}</span>
-                <span>{patientCase.selectedFieldIds.length}</span>
                 <span className={reviewed === patientCase.selectedFieldIds.length ? "status ok" : "status pending"}>
                   {reviewed}/{patientCase.selectedFieldIds.length} reviewed
                 </span>
-                <button className="icon-command" title="Open case" onClick={() => onOpen(patientCase)}>
-                  <FolderOpen size={18} />
+                <button className="secondary command row-edit" title="Open and edit saved fields" onClick={() => onOpen(patientCase)}>
+                  <PencilLine size={16} />
+                  Review / Edit
                 </button>
               </div>
             );
