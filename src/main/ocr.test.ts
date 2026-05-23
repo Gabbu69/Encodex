@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { alignDocument, normalizeRecognizedText } from "./ocr.js";
+import { alignDocument, bestNameCandidate, normalizeRecognizedText, usableNameText } from "./ocr.js";
 
 describe("document rotation and alignment", () => {
   it("crops against rotated dimensions for a sideways photographed page", async () => {
@@ -20,5 +20,18 @@ describe("selected name OCR cleanup", () => {
   it("removes a printed field label without correcting the recognized name", () => {
     expect(normalizeRecognizedText("observed_name", "NAME: SAMPLE, RUBY JEAN\n")).toBe("SAMPLE, RUBY JEAN");
     expect(normalizeRecognizedText("observed_name", "SAMPLO, RUBY JEAN")).toBe("SAMPLO, RUBY JEAN");
+  });
+
+  it("does not offer meaningless short fragments as a recognized name", () => {
+    expect(usableNameText("Ey")).toBe(false);
+    expect(bestNameCandidate([{ text: "Ey", confidence: 70 }])).toEqual({ text: "", confidence: 0 });
+  });
+
+  it("chooses a name-like multiword result across image processing passes", () => {
+    expect(bestNameCandidate([
+      { text: "SE", confidence: 81 },
+      { text: "SAMPLE, RUBY JEAN", confidence: 74 },
+      { text: "SAMPLE, RUBY IEAN", confidence: 66 }
+    ])).toEqual({ text: "SAMPLE, RUBY JEAN", confidence: 74 });
   });
 });

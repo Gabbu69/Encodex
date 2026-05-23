@@ -203,18 +203,22 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
         }
       });
       if (readsOnlyName && nameOnly) {
-        const recognizedName = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name")?.text;
+        const nameReading = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name");
+        const recognizedName = nameReading?.text;
+        const qualityGuidance = nameReading?.qualityWarning ? ` ${nameReading.qualityWarning}` : "";
         setNotice(
           recognizedName
-            ? "Name detected. Verify its spelling, then select Review & Copy Name."
-            : "The name was not clear. Type it above, then select Review & Copy Name."
+            ? `Name detected. Verify its spelling, then select Review & Copy Name.${qualityGuidance}`
+            : `The name was not clear. Type it above, then select Review & Copy Name.${qualityGuidance}`
         );
       } else if (readsOnlyName) {
-        const recognizedName = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name")?.text;
+        const nameReading = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name");
+        const recognizedName = nameReading?.text;
+        const qualityGuidance = nameReading?.qualityWarning ? ` ${nameReading.qualityWarning}` : "";
         setNotice(
           recognizedName
-            ? "Name detected. Check the spelling, mark Name on document as Reviewed, then save selected values."
-            : "The name was not clear. Type it, mark Name on document as Reviewed, then save selected values."
+            ? `Name detected. Check the spelling, mark Name on document as Reviewed, then save selected values.${qualityGuidance}`
+            : `The name was not clear. Type it, mark Name on document as Reviewed, then save selected values.${qualityGuidance}`
         );
       } else {
         setNotice("Typed field suggestions are ready for confirmation.");

@@ -12,6 +12,7 @@ export interface OcrSuggestion {
   fieldId: string;
   text: string;
   confidence: number;
+  qualityWarning?: string;
 }
 
 export function normalizeRecognizedText(fieldId: string, text: string) {
@@ -20,6 +21,28 @@ export function normalizeRecognizedText(fieldId: string, text: string) {
     return normalized.replace(/^NAME\s*[:.-]?\s*/i, "").trim();
   }
   return normalized;
+}
+
+interface NameCandidate {
+  text: string;
+  confidence: number;
+}
+
+export function usableNameText(text: string) {
+  const words = text.match(/[A-Za-z]{2,}/g) ?? [];
+  return words.length >= 2 && words.join("").length >= 6;
+}
+
+export function bestNameCandidate(candidates: NameCandidate[]) {
+  const scored = candidates
+    .map((candidate) => ({
+      ...candidate,
+      score: usableNameText(candidate.text)
+        ? candidate.confidence + (candidate.text.includes(",") ? 8 : 0) + ((candidate.text.match(/[A-Za-z]{2,}/g) ?? []).length >= 3 ? 4 : 0)
+        : -1
+    }))
+    .sort((first, second) => second.score - first.score);
+  return scored[0]?.score >= 0 ? { text: scored[0].text, confidence: scored[0].confidence } : { text: "", confidence: 0 };
 }
 
 export async function alignDocument(bytes: Buffer, alignment: Alignment) {
@@ -63,6 +86,17 @@ export class LocalOcr {
       const top = Math.round(region.top * metadata.height);
       const width = Math.max(1, Math.round(region.width * metadata.width));
       const height = Math.max(1, Math.round(region.height * metadata.height));
+      if (field.id === "observed_name") {
+        const nameSuggestion = await this.recognizeName(worker, aligned, { left, top, width, height });
+        suggestions.push({
+          fieldId: field.id,
+          ...nameSuggestion,
+          qualityWarning: height < 14 || nameSuggestion.confidence < 65
+            ? "Image quality is low for reliable name reading. Retake a close-up photo of the physical paper, not a screen, or type and review the name manually."
+            : undefined
+        });
+        continue;
+      }
       const enlarge = MULTILINE_FIELD_IDS.has(field.id) || ENLARGED_SINGLE_LINE_FIELD_IDS.has(field.id);
       let cropPipeline = sharp(aligned)
         .extract({ left, top, width, height })
@@ -78,7 +112,8 @@ export class LocalOcr {
           ? Tesseract.PSM.AUTO
           : Tesseract.PSM.SINGLE_BLOCK;
       await worker.setParameters({
-        tessedit_pageseg_mode: pageSegmentationMode
+        tessedit_pageseg_mode: pageSegmentationMode,
+        tessedit_char_whitelist: ""
       });
       const result = await worker.recognize(crop);
       suggestions.push({
@@ -106,5 +141,39 @@ export class LocalOcr {
       });
     }
     return this.worker;
+  }
+
+  private async recognizeName(
+    worker: Awaited<ReturnType<typeof Tesseract.createWorker>>,
+    aligned: Buffer,
+    region: { left: number; top: number; width: number; height: number }
+  ): Promise<NameCandidate> {
+    await worker.setParameters({
+      tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE,
+      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz,.' -",
+      preserve_interword_spaces: "1"
+    });
+    const candidates: NameCandidate[] = [];
+    for (const pass of [
+      { height: 96, threshold: undefined },
+      { height: 150, threshold: undefined },
+      { height: 110, threshold: 185 }
+    ]) {
+      let pipeline = sharp(aligned)
+        .extract(region)
+        .grayscale()
+        .resize({ height: Math.max(pass.height, region.height * 4), kernel: "lanczos3" })
+        .normalize()
+        .sharpen();
+      if (pass.threshold !== undefined) {
+        pipeline = pipeline.threshold(pass.threshold);
+      }
+      const result = await worker.recognize(await pipeline.png().toBuffer());
+      candidates.push({
+        text: normalizeRecognizedText("observed_name", result.data.text),
+        confidence: Math.round(result.data.confidence)
+      });
+    }
+    return bestNameCandidate(candidates);
   }
 }

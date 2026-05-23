@@ -100,7 +100,7 @@ function capturePage(token: string, continuousCapture = false, nextPaper = false
     <section class="mobile-capture">
       <p class="eyebrow">${nextPaper ? "Continuous capture" : "Phone capture"}</p>
       <h1>${nextPaper ? "Scan next paper" : "Scan document"}</h1>
-      <p class="lead">${nextPaper ? "The same selected fields will be collected again." : "Fill the frame with one clear page."}</p>
+      <p class="lead">${nextPaper ? "The same selected fields will be collected again." : "Fill the frame with one clear page."} Photograph the physical paper close-up, not a preview on another screen.</p>
       <form id="capture-form" method="post" enctype="multipart/form-data" action="${action}">
         <label class="pick">
           <span class="pick-title">Take or choose photo</span>
