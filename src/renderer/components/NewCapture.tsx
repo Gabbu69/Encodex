@@ -7,7 +7,7 @@ interface NewCaptureProps {
   fields: FieldDefinition[];
   presets: CapturePreset[];
   linkedFrom?: PatientCase;
-  onCreate: (documentType: DocumentType, profileName: string, fields: string[]) => Promise<void>;
+  onCreate: (documentType: DocumentType, profileName: string, fields: string[], continuousCapture: boolean) => Promise<void>;
   onSavePreset: (name: string, documentType: DocumentType, fields: string[]) => Promise<void>;
 }
 
@@ -16,6 +16,7 @@ export function NewCapture({ fields, presets, linkedFrom, onCreate, onSavePreset
   const [documentType, setDocumentType] = useState<DocumentType>(initialDocument);
   const [activePreset, setActivePreset] = useState("name-only");
   const [selected, setSelected] = useState<string[]>(["observed_name"]);
+  const [continuousCapture, setContinuousCapture] = useState(!linkedFrom);
   const [customName, setCustomName] = useState("");
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState(false);
@@ -84,7 +85,7 @@ export function NewCapture({ fields, presets, linkedFrom, onCreate, onSavePreset
     setPending(true);
     setMessage("");
     try {
-      await onCreate(documentType, profileName, selected);
+      await onCreate(documentType, profileName, selected, continuousCapture && !linkedFrom);
     } catch (caught) {
       setMessage((caught as Error).message);
     } finally {
@@ -142,6 +143,25 @@ export function NewCapture({ fields, presets, linkedFrom, onCreate, onSavePreset
             </div>
           </fieldset>
         ))}
+      </div>
+      <div className="setup-band capture-mode">
+        <h3>Capture Mode</h3>
+        <label className={`continuous-option ${linkedFrom ? "disabled" : ""}`}>
+          <input
+            type="checkbox"
+            checked={continuousCapture && !linkedFrom}
+            disabled={Boolean(linkedFrom)}
+            onChange={(event) => setContinuousCapture(event.target.checked)}
+          />
+          <span>
+            <strong>Continuous phone scanning</strong>
+            <small>
+              {linkedFrom
+                ? "Related-form capture is handled as one patient transaction."
+                : "After each upload, capture the next paper on the phone without scanning another QR code."}
+            </small>
+          </span>
+        </label>
       </div>
       <div className="setup-band custom-save">
         <label className="form-field">

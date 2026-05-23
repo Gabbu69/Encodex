@@ -65,6 +65,7 @@ export interface PatientCase {
   documentType: DocumentType;
   profileName: string;
   selectedFieldIds: string[];
+  continuousCapture?: boolean;
   values: Record<string, StoredValue>;
   alignment: Alignment;
   image?: CaseImage;

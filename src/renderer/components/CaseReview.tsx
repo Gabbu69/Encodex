@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlignCenter,
   CheckCircle2,
@@ -23,7 +23,7 @@ interface CaseReviewProps {
   masterPatientCount: number;
   onCaseUpdate: (patientCase: PatientCase) => void;
   onAttachRelated: (patientCase: PatientCase) => void;
-  onComplete: () => void;
+  onComplete: () => void | Promise<void>;
 }
 
 export function CaseReview({ patientCase, fields, capture, masterPatientCount, onCaseUpdate, onAttachRelated, onComplete }: CaseReviewProps) {
@@ -39,6 +39,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   const [alignment, setAlignment] = useState(patientCase.alignment);
   const [pending, setPending] = useState("");
   const [notice, setNotice] = useState("");
+  const automaticReadImage = useRef("");
 
   useEffect(() => {
     setDraft(
@@ -118,14 +119,14 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     }
   }
 
-  async function readTypedFields() {
+  async function readTypedFields(effectiveAlignment = alignment) {
     setPending("ocr");
     setNotice("");
     try {
       const changedAlignment = (["rotation", "top", "right", "bottom", "left"] as const)
-        .some((edge) => alignment[edge] !== patientCase.alignment[edge]);
+        .some((edge) => effectiveAlignment[edge] !== patientCase.alignment[edge]);
       if (changedAlignment) {
-        onCaseUpdate(await api.align(patientCase.id, alignment));
+        onCaseUpdate(await api.align(patientCase.id, effectiveAlignment));
       }
       const requested = selectedFields
         .filter((field) => sourceForDocument(field, patientCase.documentType) === "ocr" && field.region?.[patientCase.documentType])
@@ -226,7 +227,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     setPending("complete");
     try {
       await api.complete(patientCase.id);
-      onComplete();
+      await onComplete();
     } catch (caught) {
       setNotice((caught as Error).message);
     } finally {
@@ -244,12 +245,25 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   const readsOnlyName = visibleScanFields.length === 1 && visibleScanFields[0].id === "observed_name";
   const allReviewed = patientCase.selectedFieldIds.every((fieldId) => patientCase.values[fieldId]?.confirmed);
 
+  useEffect(() => {
+    if (!patientCase.image || !hasOcr || automaticReadImage.current === patientCase.image.id) {
+      return;
+    }
+    automaticReadImage.current = patientCase.image.id;
+    if (Object.keys(patientCase.values).length === 0) {
+      void readTypedFields(patientCase.alignment);
+    }
+  }, [patientCase.id, patientCase.image?.id, hasOcr]);
+
   return (
     <section className="content-view review-view">
       <header className="view-header">
         <div>
           <h2>{documentLabel(patientCase.documentType)}</h2>
-          <p>{patientCase.profileName} / {patientCase.selectedFieldIds.length} selected value{patientCase.selectedFieldIds.length === 1 ? "" : "s"}</p>
+          <p>
+            {patientCase.profileName} / {patientCase.selectedFieldIds.length} selected value{patientCase.selectedFieldIds.length === 1 ? "" : "s"}
+            {patientCase.continuousCapture ? " / Continuous queue" : ""}
+          </p>
         </div>
         <div className="header-actions">
           <button className="secondary command" onClick={() => onAttachRelated(patientCase)}>
@@ -278,18 +292,23 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                 </button>
               </div>
               {activeCapture && (
-                <div className="qr-layout">
-                  <img className="qr" alt="Phone capture QR code" src={activeCapture.qrDataUrl} />
-                  <div className="capture-link">
-                    <Link2 size={17} />
-                    <span>{activeCapture.url}</span>
+                <>
+                  <div className="qr-layout">
+                    <img className="qr" alt="Phone capture QR code" src={activeCapture.qrDataUrl} />
+                    <div className="capture-link">
+                      <Link2 size={17} />
+                      <span>{activeCapture.url}</span>
+                    </div>
                   </div>
-                </div>
+                  {patientCase.continuousCapture && (
+                    <p className="capture-tip">Continuous scanning is on. After sending each paper, tap Capture Next Paper on the phone.</p>
+                  )}
+                </>
               )}
             </div>
           )}
           {patientCase.image && hasOcr && (
-            <button className="primary command scan-action" disabled={pending === "ocr"} onClick={readTypedFields}>
+            <button className="primary command scan-action" disabled={pending === "ocr"} onClick={() => void readTypedFields()}>
               {pending === "ocr" ? <LoaderCircle className="spin" size={17} /> : <ScanText size={17} />}
               {readsOnlyName ? "Read Selected Name Only" : "Read Selected Typed Fields"}
             </button>

@@ -42,6 +42,14 @@ interface Session {
   expiresAt: number;
 }
 
+interface ContinuousCapturePermission {
+  documentType: DocumentType;
+  profileName: string;
+  selectedFieldIds: string[];
+  expiresAt: number;
+  used: boolean;
+}
+
 const SESSION_COOKIE = "medical_encoder_session";
 const SESSION_TTL = 8 * 60 * 60 * 1000;
 const UPLOAD_TTL = 10 * 60 * 1000;
@@ -86,13 +94,14 @@ function phoneShell(title: string, content: string, script = "") {
   return `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>${escapeHtml(title)} | Encodex</title><link rel="stylesheet" href="/capture.css"></head><body><main class="phone-shell"><header class="phone-brand"><span>EX</span><strong>Encodex</strong></header>${content}</main>${script}</body></html>`;
 }
 
-function capturePage(token: string) {
+function capturePage(token: string, continuousCapture = false, nextPaper = false) {
+  const action = nextPaper ? `/capture/${escapeHtml(token)}/next` : `/capture/${escapeHtml(token)}`;
   return phoneShell("Capture document", `
     <section class="mobile-capture">
-      <p class="eyebrow">Phone capture</p>
-      <h1>Scan document</h1>
-      <p class="lead">Fill the frame with one clear page.</p>
-      <form id="capture-form" method="post" enctype="multipart/form-data" action="/capture/${escapeHtml(token)}">
+      <p class="eyebrow">${nextPaper ? "Continuous capture" : "Phone capture"}</p>
+      <h1>${nextPaper ? "Scan next paper" : "Scan document"}</h1>
+      <p class="lead">${nextPaper ? "The same selected fields will be collected again." : "Fill the frame with one clear page."}</p>
+      <form id="capture-form" method="post" enctype="multipart/form-data" action="${action}">
         <label class="pick">
           <span class="pick-title">Take or choose photo</span>
           <span class="pick-meta">JPEG, PNG, or WebP / up to 12 MB</span>
@@ -102,17 +111,22 @@ function capturePage(token: string) {
         <p id="file-state" class="file-state" aria-live="polite">No photo selected</p>
         <button id="send-photo" type="submit">Send to Laptop</button>
       </form>
+      ${continuousCapture && !nextPaper ? `<p class="mode-note">Continuous mode is on. After this upload, continue with the next paper without rescanning the QR code.</p>` : ""}
       <p class="privacy-note">Uploads to this laptop over the local network.</p>
     </section>
   `, `<script defer src="/capture.js"></script>`);
 }
 
-function phoneResultPage(success: boolean, title: string, message: string) {
+function phoneResultPage(success: boolean, title: string, message: string, nextToken?: string) {
   return phoneShell(title, `
     <section class="mobile-result ${success ? "success" : "error"}">
       <span class="result-mark" aria-hidden="true">${success ? "&#10003;" : "!"}</span>
       <h1>${escapeHtml(title)}</h1>
       <p>${escapeHtml(message)}</p>
+      ${nextToken ? `
+        <a class="next-action" href="/capture/${escapeHtml(nextToken)}/next">Capture Next Paper</a>
+        <p class="queue-note">Same profile and selected fields only.</p>
+      ` : ""}
     </section>
   `);
 }
@@ -133,6 +147,7 @@ function selectedValuesOnly(patientCase: PatientCase, values: Record<string, Sto
 export function createServer(dependencies: ServerDependencies) {
   const app = express();
   const sessions = new Map<string, Session>();
+  const continuousCaptures = new Map<string, ContinuousCapturePermission>();
   let clipboardRevision = 0;
   const now = () => dependencies.now?.() ?? new Date();
 
@@ -174,11 +189,15 @@ export function createServer(dependencies: ServerDependencies) {
       button { height: 52px; margin-top: 8px; border: 0; border-radius: 7px; background: var(--primary); color: #fff; font: inherit; font-size: 16px; font-weight: 650; }
       button:disabled { opacity: .62; }
       button:active:not(:disabled) { background: var(--primary-dark); }
+      .mode-note { margin: 3px 0 0; padding: 12px 13px; border-radius: 7px; background: #edf7f5; color: var(--primary-dark); font-size: 13px; line-height: 1.45; }
       .privacy-note { margin: 25px 0 0; padding: 14px 0 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.45; }
       .mobile-result { min-height: calc(100svh - 112px); display: grid; align-content: center; justify-items: center; text-align: center; padding: 20px; }
       .result-mark { width: 54px; height: 54px; margin-bottom: 20px; display: grid; place-items: center; border-radius: 50%; background: #e6f4ef; color: var(--primary); font-size: 28px; font-weight: 650; }
       .mobile-result.error .result-mark { background: #fbebea; color: var(--error); }
       .mobile-result p { max-width: 310px; margin: 11px 0 0; color: var(--muted); font-size: 15px; line-height: 1.45; }
+      .next-action { width: 100%; height: 52px; margin-top: 30px; border-radius: 7px; background: var(--primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; font-size: 16px; font-weight: 650; }
+      .next-action:active { background: var(--primary-dark); }
+      .mobile-result .queue-note { margin-top: 12px; font-size: 12px; }
     `);
   });
 
@@ -238,7 +257,7 @@ export function createServer(dependencies: ServerDependencies) {
         response.status(410).type("html").send(phoneResultPage(false, "Link unavailable", "Create a new phone capture link on the laptop and try again."));
         return;
       }
-      response.type("html").send(capturePage(token));
+      response.type("html").send(capturePage(token, Boolean(patientCase.continuousCapture)));
     } catch (error) {
       response.status(400).type("html").send(phoneResultPage(false, "Unable to open capture", (error as Error).message));
     }
@@ -270,24 +289,81 @@ export function createServer(dependencies: ServerDependencies) {
             response.status(410).type("html").send(phoneResultPage(false, "Link unavailable", "Create a new phone capture link on the laptop and try again."));
             return;
           }
-          const imageId = dependencies.store.newId();
-          await dependencies.store.storeImage(imageId, request.file.buffer);
-          if (patientCase.image) {
-            await dependencies.store.deleteImage(patientCase.image.id);
-          }
-          patientCase.image = {
-            id: imageId,
-            uploadedAt: iso(now()),
-            expiresAt: new Date(now().getTime() + IMAGE_RETENTION).toISOString(),
-            mimeType: request.file.mimetype
-          };
-          patientCase.uploadUsed = true;
-          patientCase.updatedAt = iso(now());
+          await storeUploadedPhoto(patientCase, request.file);
           await dependencies.store.updateData((stored) => {
             const destination = requireCase(stored, patientCase.id);
             Object.assign(destination, patientCase);
           });
-          response.type("html").send(phoneResultPage(true, "Photo sent", "Continue on the laptop to review the selected fields."));
+          if (patientCase.continuousCapture) {
+            grantContinuation(parameter(request, "token"), patientCase);
+          }
+          response.type("html").send(phoneResultPage(
+            true,
+            "Photo sent",
+            patientCase.continuousCapture ? "This paper is queued on the laptop. Continue scanning or review it there." : "Continue on the laptop to review the selected fields.",
+            patientCase.continuousCapture ? parameter(request, "token") : undefined
+          ));
+        } catch (error) {
+          response.status(400).type("html").send(phoneResultPage(false, "Photo not sent", (error as Error).message));
+        }
+      })();
+    });
+  });
+
+  app.get("/capture/:token/next", async (request, response) => {
+    try {
+      if (!dependencies.store.isUnlocked()) {
+        response.status(423).type("html").send(phoneResultPage(false, "Laptop is locked", "Unlock Encodex on the laptop before continuing."));
+        return;
+      }
+      if (!continuationPermission(parameter(request, "token"))) {
+        response.status(410).type("html").send(phoneResultPage(false, "Capture finished", "Create a new continuous capture on the laptop to continue."));
+        return;
+      }
+      response.type("html").send(capturePage(parameter(request, "token"), true, true));
+    } catch (error) {
+      response.status(400).type("html").send(phoneResultPage(false, "Unable to continue", (error as Error).message));
+    }
+  });
+
+  app.post("/capture/:token/next", (request, response) => {
+    upload.single("document")(request, response, (uploadError) => {
+      if (uploadError) {
+        const message = uploadError instanceof multer.MulterError && uploadError.code === "LIMIT_FILE_SIZE"
+          ? "This photo is over 12 MB. Choose a smaller image or retake it."
+          : "Choose one JPEG, PNG, or WebP document photo and try again.";
+        response.status(400).type("html").send(phoneResultPage(false, "Photo not sent", message));
+        return;
+      }
+      void (async () => {
+        try {
+          if (!dependencies.store.isUnlocked()) {
+            response.status(423).type("html").send(phoneResultPage(false, "Laptop is locked", "Unlock Encodex on the laptop before continuing."));
+            return;
+          }
+          if (!request.file || !["image/jpeg", "image/png", "image/webp"].includes(request.file.mimetype)) {
+            response.status(400).type("html").send(phoneResultPage(false, "Photo not sent", "Choose one JPEG, PNG, or WebP document photo and try again."));
+            return;
+          }
+          const continuation = continuationPermission(parameter(request, "token"));
+          if (!continuation) {
+            response.status(410).type("html").send(phoneResultPage(false, "Capture finished", "Create a new continuous capture on the laptop to continue."));
+            return;
+          }
+          continuation.used = true;
+          try {
+            const nextCase = newPatientCase(continuation.documentType, continuation.profileName, continuation.selectedFieldIds, true);
+            const nextCapability = issueUploadCapability(nextCase);
+            await storeUploadedPhoto(nextCase, request.file);
+            await dependencies.store.updateData((stored) => {
+              stored.cases.unshift(nextCase);
+            });
+            grantContinuation(nextCapability.token, nextCase);
+            response.type("html").send(phoneResultPage(true, "Photo sent", "This paper is queued on the laptop. Continue scanning or review it there.", nextCapability.token));
+          } catch (error) {
+            continuation.used = false;
+            throw error;
+          }
         } catch (error) {
           response.status(400).type("html").send(phoneResultPage(false, "Photo not sent", (error as Error).message));
         }
@@ -405,14 +481,73 @@ export function createServer(dependencies: ServerDependencies) {
     }
   });
 
-  async function issueUploadLink(patientCase: PatientCase) {
+  function issueUploadCapability(patientCase: PatientCase) {
     const token = randomBytes(28).toString("hex");
     patientCase.uploadTokenHash = hashToken(token);
     patientCase.uploadExpiresAt = new Date(now().getTime() + UPLOAD_TTL).toISOString();
     patientCase.uploadUsed = false;
     patientCase.updatedAt = iso(now());
     const url = `${dependencies.captureOrigin()}/capture/${token}`;
+    return { token, url };
+  }
+
+  async function issueUploadLink(patientCase: PatientCase) {
+    const { url } = issueUploadCapability(patientCase);
     return { url, qrDataUrl: await QRCode.toDataURL(url, { margin: 1, width: 280 }) };
+  }
+
+  function newPatientCase(documentType: DocumentType, profileName: string, fieldIds: string[], continuousCapture: boolean): PatientCase {
+    const timestamp = iso(now());
+    return {
+      id: dependencies.store.newId(),
+      documentType,
+      profileName,
+      selectedFieldIds: [...new Set(fieldIds)],
+      continuousCapture,
+      values: {},
+      alignment: initialAlignment(documentType),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+  }
+
+  async function storeUploadedPhoto(patientCase: PatientCase, file: Express.Multer.File) {
+    const imageId = dependencies.store.newId();
+    await dependencies.store.storeImage(imageId, file.buffer);
+    if (patientCase.image) {
+      await dependencies.store.deleteImage(patientCase.image.id);
+    }
+    patientCase.image = {
+      id: imageId,
+      uploadedAt: iso(now()),
+      expiresAt: new Date(now().getTime() + IMAGE_RETENTION).toISOString(),
+      mimeType: file.mimetype
+    };
+    patientCase.uploadUsed = true;
+    if (patientCase.continuousCapture) {
+      patientCase.uploadExpiresAt = new Date(now().getTime() + UPLOAD_TTL).toISOString();
+    }
+    patientCase.updatedAt = iso(now());
+  }
+
+  function grantContinuation(token: string, patientCase: PatientCase) {
+    continuousCaptures.set(hashToken(token), {
+      documentType: patientCase.documentType,
+      profileName: patientCase.profileName,
+      selectedFieldIds: [...patientCase.selectedFieldIds],
+      expiresAt: now().getTime() + UPLOAD_TTL,
+      used: false
+    });
+  }
+
+  function continuationPermission(token: string) {
+    const tokenHash = hashToken(token);
+    const permission = continuousCaptures.get(tokenHash);
+    if (!permission || permission.used || permission.expiresAt <= now().getTime()) {
+      continuousCaptures.delete(tokenHash);
+      return undefined;
+    }
+    return permission;
   }
 
   app.post("/api/cases", async (request, response, next) => {
@@ -421,21 +556,13 @@ export function createServer(dependencies: ServerDependencies) {
       const fieldIds = request.body.fieldIds as string[];
       const profileName = String(request.body.profileName ?? "").trim();
       const linkToCaseId = request.body.linkToCaseId ? String(request.body.linkToCaseId) : undefined;
+      const continuousCapture = request.body.continuousCapture === true && !linkToCaseId;
       if (!isDocumentType(documentType) || !validSelectedFields(documentType, fieldIds) || !profileName) {
         response.status(400).json({ error: "Choose a supported form and one or more fields before capture." });
         return;
       }
       const timestamp = iso(now());
-      const patientCase: PatientCase = {
-        id: dependencies.store.newId(),
-        documentType,
-        profileName,
-        selectedFieldIds: [...new Set(fieldIds)],
-        values: {},
-        alignment: initialAlignment(documentType),
-        createdAt: timestamp,
-        updatedAt: timestamp
-      };
+      const patientCase = newPatientCase(documentType, profileName, fieldIds, continuousCapture);
       const capture = await issueUploadLink(patientCase);
       await dependencies.store.updateData((data) => {
         if (linkToCaseId) {

@@ -24,9 +24,9 @@ On first launch, create an app password. The encrypted workspace cannot be opene
 ## Workflow
 
 1. Import an approved patient master `.csv` or `.xlsx` file with official name, PhilHealth ID, and birthdate columns when correction or PIN lookup is needed.
-2. Choose `New Capture`, the form template, and a capture profile such as `Name Only`, or create a custom field selection.
-3. Scan the QR code with the phone and submit the photograph.
-4. On the laptop, adjust alignment, read selected typed fields when applicable, and confirm only the selected fields.
+2. Choose `New Capture`, the form template, and a capture profile such as `Name Only`, or create a custom field selection. Leave `Continuous phone scanning` enabled when processing many papers with the same setup.
+3. Scan the QR code once with the phone and submit the first photograph. In continuous mode, tap `Capture Next Paper` after each successful upload to continue without rescanning a QR code.
+4. On the laptop, adjust alignment if needed and confirm only the selected fields. Typed selected fields are suggested automatically when a queued photo is opened.
 5. Use each confirmed field's copy button to paste into the official system, or explicitly export reviewed fields to CSV.
 6. Once official entry is confirmed, select `Mark Entered And Delete` to remove the local case and image.
 
@@ -34,8 +34,9 @@ On first launch, create an app password. The encrypted workspace cannot be opene
 
 1. Connect the laptop and phone to the same private network. A password-protected hotspot created by the laptop is the preferred current setup.
 2. Start Encodex on the laptop, unlock it, and create a new capture after choosing the form and selected fields.
-3. Scan the displayed QR code using the phone camera. The phone opens a short-lived, single-use local upload page.
+3. Scan the displayed QR code using the phone camera. The phone opens a short-lived local upload page.
 4. Photograph the document and submit it from the phone; review and copying continue on the laptop.
+5. For continuous mode, select `Capture Next Paper` on the phone after each upload. Each sent photo creates a separate case using exactly the same capture profile and selected fields; you may review as you go or queue several papers first.
 
 The current QR upload link uses local `http://` transport. Do not upload real patient documents over shared Wi-Fi unless the facility has explicitly approved this transport risk. Use fabricated or redacted records for shared-network testing until HTTPS upload support is added or an approved procedure is in place.
 

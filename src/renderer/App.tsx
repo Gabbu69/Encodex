@@ -26,6 +26,18 @@ export function App() {
     void api.status().then(setAuthentication).catch((caught) => setError((caught as Error).message));
   }, []);
 
+  useEffect(() => {
+    if (!authentication?.unlocked || page !== "cases") {
+      return;
+    }
+    const polling = window.setInterval(() => {
+      void api.cases().then(setCases).catch(() => {
+        // The next foreground action will show session or connection errors.
+      });
+    }, 2500);
+    return () => window.clearInterval(polling);
+  }, [authentication?.unlocked, page]);
+
   async function loadWorkspace() {
     const [nextConfig, nextCases] = await Promise.all([api.config(), api.cases()]);
     setConfig(nextConfig);
@@ -50,8 +62,8 @@ export function App() {
     setAuthentication({ initialized: true, unlocked: false });
   }
 
-  async function createCase(documentType: DocumentType, profileName: string, fieldIds: string[]) {
-    const created = await api.createCase(documentType, profileName, fieldIds, linkFromCase?.id);
+  async function createCase(documentType: DocumentType, profileName: string, fieldIds: string[], continuousCapture: boolean) {
+    const created = await api.createCase(documentType, profileName, fieldIds, linkFromCase?.id, continuousCapture);
     setCases((current) => [created.patientCase, ...current]);
     setActiveCase(created.patientCase);
     setCapture(created.capture);
@@ -77,7 +89,15 @@ export function App() {
   }
 
   async function completedCase() {
-    setCases((current) => current.filter((patientCase) => patientCase.id !== activeCase?.id));
+    const remaining = await api.cases();
+    setCases(remaining);
+    const queued = [...remaining].reverse().find((patientCase) => patientCase.image);
+    if (queued) {
+      setActiveCase(queued);
+      setCapture(undefined);
+      setPage("review");
+      return;
+    }
     setActiveCase(undefined);
     setPage("cases");
   }

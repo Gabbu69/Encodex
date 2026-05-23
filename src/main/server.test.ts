@@ -85,6 +85,91 @@ describe("selected-field privacy boundary", () => {
     expect(updated.body.image).toEqual(expect.objectContaining({ mimeType: "image/jpeg" }));
   });
 
+  it("queues repeated phone uploads with the same selected fields in continuous mode", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "xray", profileName: "Name Only", fieldIds: ["observed_name"], continuousCapture: true })
+      .expect(201);
+    const token = String(created.body.capture.url).split("/").pop()!;
+
+    const firstUpload = await agent
+      .post(`/capture/${token}`)
+      .attach("document", Buffer.from("first fabricated image"), { filename: "first.jpg", contentType: "image/jpeg" })
+      .expect(200);
+    expect(firstUpload.text).toContain("Capture Next Paper");
+    expect(firstUpload.text).toContain("Same profile and selected fields only.");
+
+    const nextPage = await agent.get(`/capture/${token}/next`).expect(200);
+    expect(nextPage.text).toContain("Scan next paper");
+    expect(nextPage.text).toContain("same selected fields");
+
+    const nextUpload = await agent
+      .post(`/capture/${token}/next`)
+      .attach("document", Buffer.from("second fabricated image"), { filename: "second.jpg", contentType: "image/jpeg" })
+      .expect(200);
+    expect(nextUpload.text).toContain("Capture Next Paper");
+
+    await agent
+      .post(`/capture/${token}/next`)
+      .attach("document", Buffer.from("duplicate attempt"), { filename: "third.jpg", contentType: "image/jpeg" })
+      .expect(410);
+
+    const cases = (await agent.get("/api/cases").expect(200)).body;
+    expect(cases).toHaveLength(2);
+    expect(cases.every((patientCase: { continuousCapture?: boolean }) => patientCase.continuousCapture)).toBe(true);
+    expect(cases.map((patientCase: { selectedFieldIds: string[] }) => patientCase.selectedFieldIds)).toEqual([
+      ["observed_name"],
+      ["observed_name"]
+    ]);
+    expect(cases.every((patientCase: { image?: unknown }) => Boolean(patientCase.image))).toBe(true);
+  });
+
+  it("does not offer another phone upload when continuous scanning is off", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "urinalysis", profileName: "Name Only", fieldIds: ["observed_name"], continuousCapture: false })
+      .expect(201);
+    const token = String(created.body.capture.url).split("/").pop()!;
+
+    const uploaded = await agent
+      .post(`/capture/${token}`)
+      .attach("document", Buffer.from("fabricated image"), { filename: "form.jpg", contentType: "image/jpeg" })
+      .expect(200);
+    expect(uploaded.text).not.toContain("Capture Next Paper");
+    await agent.get(`/capture/${token}/next`).expect(410);
+  });
+
+  it("allows continuous capture after the previous reviewed case is deleted", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "xray", profileName: "Name Only", fieldIds: ["observed_name"], continuousCapture: true })
+      .expect(201);
+    const caseId = created.body.patientCase.id as string;
+    const token = String(created.body.capture.url).split("/").pop()!;
+
+    await agent
+      .post(`/capture/${token}`)
+      .attach("document", Buffer.from("first fabricated image"), { filename: "first.jpg", contentType: "image/jpeg" })
+      .expect(200);
+    await agent
+      .put(`/api/cases/${caseId}/review`)
+      .send({ values: { observed_name: { value: "REVIEWED NAME", confirmed: true } } })
+      .expect(200);
+    await agent.post(`/api/cases/${caseId}/complete`).expect(200);
+
+    await agent.get(`/capture/${token}/next`).expect(200);
+    await agent
+      .post(`/capture/${token}/next`)
+      .attach("document", Buffer.from("next fabricated image"), { filename: "next.jpg", contentType: "image/jpeg" })
+      .expect(200);
+    const remaining = (await agent.get("/api/cases").expect(200)).body;
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].selectedFieldIds).toEqual(["observed_name"]);
+  });
+
   it("returns a mobile-readable failure when a phone photo exceeds the upload limit", async () => {
     const { agent } = await harness();
     const created = await agent

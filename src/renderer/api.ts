@@ -44,10 +44,10 @@ export const api = {
   config: () => json<AppConfig>("/api/config"),
   cases: () => json<PatientCase[]>("/api/cases"),
   patientCase: (id: string) => json<PatientCase>(`/api/cases/${id}`),
-  createCase: (documentType: string, profileName: string, fieldIds: string[], linkToCaseId?: string) =>
+  createCase: (documentType: string, profileName: string, fieldIds: string[], linkToCaseId?: string, continuousCapture = false) =>
     json<{ patientCase: PatientCase; capture: CaptureLink }>("/api/cases", {
       method: "POST",
-      body: JSON.stringify({ documentType, profileName, fieldIds, linkToCaseId })
+      body: JSON.stringify({ documentType, profileName, fieldIds, linkToCaseId, continuousCapture })
     }),
   createCaptureLink: (id: string) => json<CaptureLink>(`/api/cases/${id}/capture-link`, { method: "POST" }),
   savePreset: (name: string, documentType: string, fieldIds: string[]) =>
