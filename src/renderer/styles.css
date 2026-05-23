@@ -300,6 +300,13 @@ p {
   margin: 20px 32px 0;
 }
 
+.notice.copied {
+  border-color: #7ab69b;
+  background: #e5f4ec;
+  color: #0e5f42;
+  font-weight: 600;
+}
+
 .muted {
   font-size: 13px;
   color: var(--muted);
@@ -732,6 +739,26 @@ input[type="checkbox"] {
 
 .save-review {
   justify-self: end;
+}
+
+.name-copy-workflow {
+  border: 1px solid #b8d1cf;
+  border-radius: 7px;
+  background: #f7faf9;
+  padding: 13px;
+  display: grid;
+  gap: 10px;
+}
+
+.name-copy-action {
+  justify-self: start;
+  min-width: 208px;
+}
+
+.name-copy-workflow p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .image-panel {

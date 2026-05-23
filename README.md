@@ -27,7 +27,7 @@ On first launch, create an app password. The encrypted workspace cannot be opene
 2. Choose `New Capture`, the form template, and a capture profile such as `Name Only`, or create a custom field selection. Leave `Continuous phone scanning` enabled when processing many papers with the same setup.
 3. Scan the QR code once with the phone and submit the first photograph. In continuous mode, tap `Capture Next Paper` after each successful upload to continue without rescanning a QR code.
 4. On the laptop, adjust alignment if needed and confirm only the selected fields. Typed selected fields are suggested automatically when a queued photo is opened.
-5. Use each confirmed field's copy button to paste into the official system, or explicitly export reviewed fields to CSV.
+5. For `Name Only`, verify the detected spelling and select `Review & Copy Name`; Encodex clearly confirms when the name is ready to paste into PhilHealth YAKAP. For other profiles, use each confirmed field's copy button or explicitly export reviewed fields to CSV.
 6. Once official entry is confirmed, select `Mark Entered And Delete` to remove the local case and image.
 
 ## Phone Capture Connection

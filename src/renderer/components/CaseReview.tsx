@@ -39,7 +39,12 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   const [alignment, setAlignment] = useState(patientCase.alignment);
   const [pending, setPending] = useState("");
   const [notice, setNotice] = useState("");
+  const [clipboardReady, setClipboardReady] = useState(false);
   const automaticReadImage = useRef("");
+
+  useEffect(() => {
+    setClipboardReady(false);
+  }, [patientCase.id]);
 
   useEffect(() => {
     setDraft(
@@ -75,6 +80,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   }, [patientCase.id, patientCase.image, onCaseUpdate]);
 
   function setValue(fieldId: string, value: string) {
+    setClipboardReady(false);
     setDraft((current) => ({
       ...current,
       [fieldId]: { ...current[fieldId], value, confirmed: false }
@@ -122,6 +128,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   async function readTypedFields(effectiveAlignment = alignment) {
     setPending("ocr");
     setNotice("");
+    setClipboardReady(false);
     try {
       const changedAlignment = (["rotation", "top", "right", "bottom", "left"] as const)
         .some((edge) => effectiveAlignment[edge] !== patientCase.alignment[edge]);
@@ -153,7 +160,16 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
           setTransientBirthdate(suggestion.text);
         }
       });
-      setNotice("Typed field suggestions are ready for confirmation.");
+      if (readsOnlyName) {
+        const recognizedName = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name")?.text;
+        setNotice(
+          recognizedName
+            ? "Name detected. Verify its spelling, then select Review & Copy Name."
+            : "The name was not clear. Type it above, then select Review & Copy Name."
+        );
+      } else {
+        setNotice("Typed field suggestions are ready for confirmation.");
+      }
     } catch (caught) {
       setNotice((caught as Error).message);
     } finally {
@@ -209,14 +225,44 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     setNotice("");
     try {
       await api.copy(patientCase.id, fieldId);
-      setNotice("Copied. Clipboard clears automatically in 60 seconds.");
+      setClipboardReady(true);
+      setNotice("Copied. Paste this value into PhilHealth YAKAP now. Clipboard clears automatically in 60 seconds.");
     } catch (caught) {
       setNotice((caught as Error).message);
     }
   }
 
+  async function reviewAndCopyName() {
+    const name = draft.observed_name?.value.trim() ?? "";
+    if (!name) {
+      setNotice("Read or type the name before copying.");
+      return;
+    }
+    setPending("name-copy");
+    setNotice("");
+    setClipboardReady(false);
+    try {
+      const updated = await api.review(patientCase.id, {
+        observed_name: {
+          ...draft.observed_name,
+          value: name,
+          confirmed: true
+        }
+      });
+      onCaseUpdate(updated);
+      await api.copy(patientCase.id, "observed_name");
+      setClipboardReady(true);
+      setNotice("Name copied. Paste it into the PhilHealth YAKAP name field now. Clipboard clears in 60 seconds.");
+    } catch (caught) {
+      setNotice((caught as Error).message);
+    } finally {
+      setPending("");
+    }
+  }
+
   async function clearClipboard() {
     await api.clearClipboard();
+    setClipboardReady(false);
     setNotice("Clipboard cleared.");
   }
 
@@ -243,6 +289,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     (field) => sourceForDocument(field, patientCase.documentType) === "ocr" && field.region?.[patientCase.documentType]
   );
   const readsOnlyName = visibleScanFields.length === 1 && visibleScanFields[0].id === "observed_name";
+  const nameOnly = selectedFields.length === 1 && selectedFields[0].id === "observed_name";
   const allReviewed = patientCase.selectedFieldIds.every((fieldId) => patientCase.values[fieldId]?.confirmed);
 
   useEffect(() => {
@@ -368,30 +415,46 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                       placeholder={fromMaster ? "Confirm patient match first" : "Enter or review value"}
                       onChange={(event) => setValue(field.id, event.target.value)}
                     />
-                    {!fromMaster && (
+                    {!fromMaster && !nameOnly && (
                       <label className="confirm-check">
                         <input type="checkbox" checked={value.confirmed} onChange={(event) => confirmValue(field.id, event.target.checked)} />
                         Reviewed
                       </label>
                     )}
-                    <button
-                      className="icon-command"
-                      title={`Copy ${field.label}`}
-                      disabled={!patientCase.values[field.id]?.confirmed}
-                      onClick={() => copyField(field.id)}
-                    >
-                      <Clipboard size={17} />
-                    </button>
+                    {!nameOnly && (
+                      <button
+                        className="icon-command"
+                        title={`Copy ${field.label}`}
+                        disabled={!patientCase.values[field.id]?.confirmed}
+                        onClick={() => copyField(field.id)}
+                      >
+                        <Clipboard size={17} />
+                      </button>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
-          <button className="primary command save-review" onClick={saveReview} disabled={pending === "save"}>
-            <CheckCircle2 size={17} />
-            Save Reviewed Values
-          </button>
-          {notice && <p className="notice">{notice}</p>}
+          {nameOnly ? (
+            <div className="name-copy-workflow">
+              <button
+                className="primary command name-copy-action"
+                onClick={reviewAndCopyName}
+                disabled={!patientCase.image || !draft.observed_name?.value.trim() || pending === "name-copy" || pending === "ocr"}
+              >
+                {pending === "name-copy" ? <LoaderCircle className="spin" size={17} /> : <Clipboard size={17} />}
+                {draft.observed_name?.confirmed ? "Copy Name Again" : "Review & Copy Name"}
+              </button>
+              <p>Check the spelling in the name box first. The green outline only marks the scan area; it does not copy by itself.</p>
+            </div>
+          ) : (
+            <button className="primary command save-review" onClick={saveReview} disabled={pending === "save"}>
+              <CheckCircle2 size={17} />
+              Save Reviewed Values
+            </button>
+          )}
+          {notice && <p className={`notice ${clipboardReady ? "copied" : ""}`}>{notice}</p>}
         </div>
         <aside className="image-panel">
           <div className="band-header">
