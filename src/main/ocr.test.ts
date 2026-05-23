@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { alignDocument, bestNameCandidate, normalizeRecognizedText, usableNameText } from "./ocr.js";
+import { alignDocument, bestNameCandidate, normalizeRecognizedText, suggestXrayScreenAlignment, usableNameText } from "./ocr.js";
 
 describe("document rotation and alignment", () => {
   it("crops against rotated dimensions for a sideways photographed page", async () => {
@@ -13,6 +13,36 @@ describe("document rotation and alignment", () => {
 
     expect(metadata.width).toBe(320);
     expect(metadata.height).toBe(160);
+  });
+
+  it("fits a radiology photo shown within a dark screen frame before applying its template crop", async () => {
+    const paper = await sharp({
+      create: { width: 520, height: 620, channels: 3, background: "#b9a26a" }
+    }).composite([{
+      input: await sharp({
+        create: { width: 440, height: 480, channels: 3, background: "#ffffff" }
+      }).png().toBuffer(),
+      top: 78,
+      left: 40
+    }]).png().toBuffer();
+    const screen = await sharp({
+      create: { width: 800, height: 800, channels: 3, background: "#15191d" }
+    }).composite([{ input: paper, top: 105, left: 170 }]).png().toBuffer();
+
+    const suggested = await suggestXrayScreenAlignment(screen, 0);
+
+    expect(suggested).toBeDefined();
+    expect(suggested?.left).toBeGreaterThan(0.15);
+    expect(suggested?.right).toBeGreaterThan(0.1);
+    expect(suggested?.top).toBeGreaterThan(0.2);
+  });
+
+  it("leaves a direct close-up paper photo on its calibrated alignment", async () => {
+    const directPhoto = await sharp({
+      create: { width: 520, height: 620, channels: 3, background: "#b9a26a" }
+    }).png().toBuffer();
+
+    expect(await suggestXrayScreenAlignment(directPhoto, 0)).toBeUndefined();
   });
 });
 

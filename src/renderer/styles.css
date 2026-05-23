@@ -917,6 +917,11 @@ input[type="checkbox"] {
   width: 100%;
 }
 
+.fit-page-action {
+  margin-top: 12px;
+  width: 100%;
+}
+
 .image-placeholder {
   height: 430px;
   margin-top: 15px;

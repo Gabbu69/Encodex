@@ -56,6 +56,8 @@ export const api = {
     json<PatientCase>(`/api/cases/${id}/document-type`, { method: "PUT", body: JSON.stringify({ documentType }) }),
   narrowSelection: (id: string, profileName: string, fieldIds: string[]) =>
     json<PatientCase>(`/api/cases/${id}/selection`, { method: "PUT", body: JSON.stringify({ profileName, fieldIds }) }),
+  autoFit: (id: string) =>
+    json<{ patientCase: PatientCase; adjusted: boolean }>(`/api/cases/${id}/auto-fit`, { method: "POST" }),
   align: (id: string, alignment: Alignment) =>
     json<PatientCase>(`/api/cases/${id}/alignment`, { method: "PUT", body: JSON.stringify(alignment) }),
   ocr: (id: string, fieldIds: string[]) =>

@@ -167,15 +167,18 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     }
   }
 
-  async function readTypedFields(effectiveAlignment = alignment) {
+  async function readTypedFields(effectiveAlignment = alignment, forceScreenFit = false) {
     setPending("ocr");
     setNotice("");
     setClipboardReady(false);
     try {
       const changedAlignment = (["rotation", "top", "right", "bottom", "left"] as const)
         .some((edge) => effectiveAlignment[edge] !== patientCase.alignment[edge]);
+      let baselineAlignment = patientCase.alignment;
       if (changedAlignment) {
-        onCaseUpdate(await api.align(patientCase.id, effectiveAlignment));
+        const alignedCase = await api.align(patientCase.id, effectiveAlignment);
+        onCaseUpdate(alignedCase);
+        baselineAlignment = alignedCase.alignment;
       }
       const requested = selectedFields
         .filter((field) => sourceForDocument(field, patientCase.documentType) === "ocr" && field.region?.[patientCase.documentType])
@@ -183,7 +186,36 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
       if (requiresMasterMatch(patientCase.selectedFieldIds) && supportsTypedName(patientCase.documentType)) {
         requested.push("observed_name");
       }
-      const result = await api.ocr(patientCase.id, [...new Set(requested)]);
+      let result = await api.ocr(patientCase.id, [...new Set(requested)]);
+      let automaticallyFitted = false;
+      let fitWasRejected = false;
+      let noScreenFrameFound = false;
+      const firstName = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name");
+      if (patientCase.documentType === "xray" && firstName && (forceScreenFit || !firstName.text || firstName.confidence < 65)) {
+        const fitted = await api.autoFit(patientCase.id);
+        if (fitted.adjusted) {
+          const fittedResult = await api.ocr(patientCase.id, [...new Set(requested)]);
+          const fittedName = fittedResult.suggestions.find((suggestion) => suggestion.fieldId === "observed_name");
+          const fittedNameImproved = Boolean(
+            fittedName?.text
+            && fittedName.confidence >= 35
+            && (!firstName.text || fittedName.confidence >= firstName.confidence + 5)
+          );
+          if (fittedNameImproved) {
+            automaticallyFitted = true;
+            onCaseUpdate(fitted.patientCase);
+            setAlignment(fitted.patientCase.alignment);
+            result = fittedResult;
+          } else {
+            fitWasRejected = true;
+            const restored = await api.align(patientCase.id, baselineAlignment);
+            onCaseUpdate(restored);
+            setAlignment(restored.alignment);
+          }
+        } else if (forceScreenFit) {
+          noScreenFrameFound = true;
+        }
+      }
       result.suggestions.forEach((suggestion) => {
         if (patientCase.selectedFieldIds.includes(suggestion.fieldId)) {
           setDraft((current) => ({
@@ -205,20 +237,34 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
       if (readsOnlyName && nameOnly) {
         const nameReading = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name");
         const recognizedName = nameReading?.text;
+        const fitGuidance = automaticallyFitted
+          ? " The screen border was removed automatically before retrying."
+          : fitWasRejected
+            ? " Automatic screen fitting was not kept because it did not improve the name reading."
+            : noScreenFrameFound
+              ? " No screen border was detected; capture the physical paper close-up."
+              : "";
         const qualityGuidance = nameReading?.qualityWarning ? ` ${nameReading.qualityWarning}` : "";
         setNotice(
           recognizedName
-            ? `Name detected. Verify its spelling, then select Review & Copy Name.${qualityGuidance}`
-            : `The name was not clear. Type it above, then select Review & Copy Name.${qualityGuidance}`
+            ? `Name detected. Verify its spelling, then select Review & Copy Name.${fitGuidance}${qualityGuidance}`
+            : `The name was not clear. Type it above, then select Review & Copy Name.${fitGuidance}${qualityGuidance}`
         );
       } else if (readsOnlyName) {
         const nameReading = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name");
         const recognizedName = nameReading?.text;
+        const fitGuidance = automaticallyFitted
+          ? " The screen border was removed automatically before retrying."
+          : fitWasRejected
+            ? " Automatic screen fitting was not kept because it did not improve the name reading."
+            : noScreenFrameFound
+              ? " No screen border was detected; capture the physical paper close-up."
+              : "";
         const qualityGuidance = nameReading?.qualityWarning ? ` ${nameReading.qualityWarning}` : "";
         setNotice(
           recognizedName
-            ? `Name detected. Check the spelling, mark Name on document as Reviewed, then save selected values.${qualityGuidance}`
-            : `The name was not clear. Type it, mark Name on document as Reviewed, then save selected values.${qualityGuidance}`
+            ? `Name detected. Check the spelling, mark Name on document as Reviewed, then save selected values.${fitGuidance}${qualityGuidance}`
+            : `The name was not clear. Type it, mark Name on document as Reviewed, then save selected values.${fitGuidance}${qualityGuidance}`
         );
       } else {
         setNotice("Typed field suggestions are ready for confirmation.");
@@ -614,6 +660,12 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                   Apply
                 </button>
               </div>
+              {patientCase.documentType === "xray" && readsOnlyName && (
+                <button className="secondary command fit-page-action" onClick={() => void readTypedFields(alignment, true)} disabled={pending === "ocr"}>
+                  <ScanText size={16} />
+                  Fit Screen Photo And Read Name
+                </button>
+              )}
             </>
           ) : (
             <div className="image-placeholder">Awaiting phone capture</div>

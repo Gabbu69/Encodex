@@ -61,6 +61,96 @@ export async function alignDocument(bytes: Buffer, alignment: Alignment) {
   return sharp(rotated).extract({ left, top, width, height }).png().toBuffer();
 }
 
+function longestRun(flags: boolean[]) {
+  let best = { start: 0, end: 0 };
+  let start = -1;
+  flags.forEach((matches, index) => {
+    if (matches && start === -1) {
+      start = index;
+    }
+    if ((!matches || index === flags.length - 1) && start !== -1) {
+      const end = matches && index === flags.length - 1 ? index + 1 : index;
+      if (end - start > best.end - best.start) {
+        best = { start, end };
+      }
+      start = -1;
+    }
+  });
+  return best;
+}
+
+function median(values: number[]) {
+  const sorted = [...values].sort((first, second) => first - second);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
+
+export async function suggestXrayScreenAlignment(bytes: Buffer, rotation: Alignment["rotation"]) {
+  const rotated = await sharp(bytes).rotate(rotation).png().toBuffer();
+  const { data, info } = await sharp(rotated)
+    .grayscale()
+    .resize({ width: 360 })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const sampleSize = Math.max(4, Math.min(14, Math.floor(Math.min(info.width, info.height) * 0.04)));
+  const frameSamples: number[] = [];
+  for (let y = 0; y < sampleSize; y += 1) {
+    for (let x = 0; x < sampleSize; x += 1) {
+      frameSamples.push(data[y * info.width + x]);
+      frameSamples.push(data[y * info.width + info.width - x - 1]);
+      frameSamples.push(data[(info.height - y - 1) * info.width + x]);
+      frameSamples.push(data[(info.height - y - 1) * info.width + info.width - x - 1]);
+    }
+  }
+  const frameBrightness = median(frameSamples);
+  if (frameBrightness > 88) {
+    return undefined;
+  }
+  const contentThreshold = Math.min(145, Math.max(38, frameBrightness + 30));
+  const isContent = (x: number, y: number) => data[y * info.width + x] >= contentThreshold;
+  const columns = Array.from({ length: info.width }, (_, x) => {
+    let content = 0;
+    for (let y = 0; y < info.height; y += 1) {
+      content += isContent(x, y) ? 1 : 0;
+    }
+    return content / info.height >= 0.2;
+  });
+  const rows = Array.from({ length: info.height }, (_, y) => {
+    let content = 0;
+    for (let x = 0; x < info.width; x += 1) {
+      content += isContent(x, y) ? 1 : 0;
+    }
+    return content / info.width >= 0.2;
+  });
+  const columnRun = longestRun(columns);
+  const rowRun = longestRun(rows);
+  if (columnRun.end - columnRun.start < info.width * 0.35 || rowRun.end - rowRun.start < info.height * 0.35) {
+    return undefined;
+  }
+  const outerLeft = columnRun.start / info.width;
+  const outerRight = 1 - columnRun.end / info.width;
+  const outerTop = rowRun.start / info.height;
+  const outerBottom = 1 - rowRun.end / info.height;
+  if (Math.max(outerLeft, outerRight, outerTop, outerBottom) < 0.045) {
+    return undefined;
+  }
+  const contentHeight = 1 - outerTop - outerBottom;
+  const suggestion: Alignment = {
+    rotation,
+    left: outerLeft,
+    right: outerRight,
+    top: outerTop + contentHeight * 0.16,
+    bottom: outerBottom + contentHeight * 0.1
+  };
+  if (
+    [suggestion.left, suggestion.right, suggestion.top, suggestion.bottom].some((edge) => edge > 0.35)
+    || suggestion.left + suggestion.right > 0.6
+    || suggestion.top + suggestion.bottom > 0.6
+  ) {
+    return undefined;
+  }
+  return suggestion;
+}
+
 export class LocalOcr {
   private worker?: Awaited<ReturnType<typeof Tesseract.createWorker>>;
 

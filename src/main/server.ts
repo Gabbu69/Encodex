@@ -13,7 +13,7 @@ import { BUILT_IN_PRESETS, FIELDS, isDocumentType, requiresMasterMatch, sourceFo
 import { findCandidates } from "../shared/matching.js";
 import { VaultStore, safeCase } from "./crypto-store.js";
 import { parsePatientRows, rowsToPatients, suggestMapping, type ImportMapping } from "./master-import.js";
-import { LocalOcr, type OcrSuggestion } from "./ocr.js";
+import { LocalOcr, suggestXrayScreenAlignment, type OcrSuggestion } from "./ocr.js";
 
 interface ClipboardPort {
   writeText(value: string): void;
@@ -701,6 +701,35 @@ export function createServer(dependencies: ServerDependencies) {
         updated = patientCase;
       });
       response.json(safeCase(updated!));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/cases/:caseId/auto-fit", async (request, response, next) => {
+    try {
+      const data = await dependencies.store.readData();
+      const patientCase = requireCase(data, parameter(request, "caseId"));
+      if (!patientCase.image || patientCase.documentType !== "xray") {
+        response.json({ patientCase: safeCase(patientCase), adjusted: false });
+        return;
+      }
+      const suggestion = await suggestXrayScreenAlignment(
+        await dependencies.store.readImage(patientCase.image.id),
+        patientCase.alignment.rotation
+      );
+      if (!suggestion) {
+        response.json({ patientCase: safeCase(patientCase), adjusted: false });
+        return;
+      }
+      let updated: PatientCase | undefined;
+      await dependencies.store.updateData((stored) => {
+        const destination = requireCase(stored, patientCase.id);
+        destination.alignment = suggestion;
+        destination.updatedAt = iso(now());
+        updated = destination;
+      });
+      response.json({ patientCase: safeCase(updated!), adjusted: true });
     } catch (error) {
       next(error);
     }
