@@ -57,6 +57,11 @@ describe("selected name OCR cleanup", () => {
     expect(bestNameCandidate([{ text: "Ey", confidence: 70 }])).toEqual({ text: "", confidence: 0 });
   });
 
+  it("rejects low-confidence gibberish and printed headings as names", () => {
+    expect(bestNameCandidate([{ text: "Eki Nn HERE", confidence: 9 }])).toEqual({ text: "", confidence: 9 });
+    expect(bestNameCandidate([{ text: "RADIOLOGY DEPARTMENT", confidence: 90 }])).toEqual({ text: "", confidence: 0 });
+  });
+
   it("chooses a name-like multiword result across image processing passes", () => {
     expect(bestNameCandidate([
       { text: "SE", confidence: 81 },

@@ -114,3 +114,5 @@ export const DEFAULT_ALIGNMENT: Alignment = {
   bottom: 0,
   left: 0
 };
+
+export const MIN_RELIABLE_NAME_OCR_CONFIDENCE = 55;

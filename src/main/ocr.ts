@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import sharp from "sharp";
 import Tesseract from "tesseract.js";
-import type { Alignment, DocumentType, FieldDefinition, Region } from "../shared/domain.js";
+import { MIN_RELIABLE_NAME_OCR_CONFIDENCE, type Alignment, type DocumentType, type FieldDefinition, type Region } from "../shared/domain.js";
 
 const require = createRequire(import.meta.url);
 const englishData = require("@tesseract.js-data/eng") as { langPath: string; gzip: boolean };
@@ -28,9 +28,11 @@ interface NameCandidate {
   confidence: number;
 }
 
+const FORM_HEADING_WORDS = new Set(["RADIOLOGY", "DEPARTMENT", "HOSPITAL", "UNIVERSITY", "FINDINGS", "IMPRESSION", "PROCEDURE", "PHYSICIAN"]);
+
 export function usableNameText(text: string) {
-  const words = text.match(/[A-Za-z]{2,}/g) ?? [];
-  return words.length >= 2 && words.join("").length >= 6;
+  const words = (text.match(/[A-Za-z]{2,}/g) ?? []).map((word) => word.toUpperCase());
+  return words.length >= 2 && words.join("").length >= 6 && !words.some((word) => FORM_HEADING_WORDS.has(word));
 }
 
 export function bestNameCandidate(candidates: NameCandidate[]) {
@@ -42,7 +44,13 @@ export function bestNameCandidate(candidates: NameCandidate[]) {
         : -1
     }))
     .sort((first, second) => second.score - first.score);
-  return scored[0]?.score >= 0 ? { text: scored[0].text, confidence: scored[0].confidence } : { text: "", confidence: 0 };
+  if (!scored[0] || scored[0].score < 0) {
+    return { text: "", confidence: 0 };
+  }
+  if (scored[0].confidence < MIN_RELIABLE_NAME_OCR_CONFIDENCE) {
+    return { text: "", confidence: scored[0].confidence };
+  }
+  return { text: scored[0].text, confidence: scored[0].confidence };
 }
 
 export async function alignDocument(bytes: Buffer, alignment: Alignment) {

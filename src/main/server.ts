@@ -7,7 +7,7 @@ import helmet from "helmet";
 import multer from "multer";
 import QRCode from "qrcode";
 import type { CapturePreset, DocumentType, PatientCase, Region, StoredValue } from "../shared/domain.js";
-import { DEFAULT_ALIGNMENT } from "../shared/domain.js";
+import { DEFAULT_ALIGNMENT, MIN_RELIABLE_NAME_OCR_CONFIDENCE } from "../shared/domain.js";
 import { exportCasesCsv } from "../shared/csv.js";
 import { BUILT_IN_PRESETS, FIELDS, isDocumentType, requiresMasterMatch, sourceForDocument, supportsTypedName, validSelectedFields } from "../shared/fields.js";
 import { findCandidates } from "../shared/matching.js";
@@ -809,6 +809,14 @@ export function createServer(dependencies: ServerDependencies) {
         }
         const reviewable = Object.entries(supplied).filter(([fieldId, entry]) => {
           const field = FIELDS.find((candidate) => candidate.id === fieldId)!;
+          if (
+            fieldId === "observed_name"
+            && entry.confirmed
+            && typeof entry.confidence === "number"
+            && entry.confidence < MIN_RELIABLE_NAME_OCR_CONFIDENCE
+          ) {
+            throw new Error("This OCR name is not reliable enough to confirm. Correct it manually or scan the printed name again.");
+          }
           if (sourceForDocument(field, patientCase.documentType) !== "master") {
             return true;
           }
@@ -913,6 +921,11 @@ export function createServer(dependencies: ServerDependencies) {
     try {
       const patientCase = requireCase(await dependencies.store.readData(), parameter(request, "caseId"));
       const fieldId = parameter(request, "fieldId");
+      const storedValue = patientCase.values[fieldId];
+      if (fieldId === "observed_name" && storedValue?.confidence !== undefined && storedValue.confidence < MIN_RELIABLE_NAME_OCR_CONFIDENCE) {
+        response.status(400).json({ error: "This OCR name is not reliable enough to copy. Correct it manually or scan the printed name again." });
+        return;
+      }
       if (!patientCase.selectedFieldIds.includes(fieldId) || !patientCase.values[fieldId]?.confirmed) {
         response.status(400).json({ error: "Review and confirm this selected field before copying." });
         return;

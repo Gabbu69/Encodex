@@ -45,4 +45,18 @@ describe("CSV export", () => {
     };
     expect(exportCasesCsv([patientCase])).not.toContain("UNCONFIRMED NAME");
   });
+
+  it("does not export a previously confirmed but unreliable OCR name", () => {
+    const patientCase: PatientCase = {
+      id: "case-3",
+      documentType: "xray",
+      profileName: "Name Only",
+      selectedFieldIds: ["observed_name"],
+      values: { observed_name: { value: "Eki Nn HERE", confirmed: true, confidence: 9 } },
+      alignment: { rotation: 0, top: 0, right: 0, bottom: 0, left: 0 },
+      createdAt: "2026-05-23T00:00:00.000Z",
+      updatedAt: "2026-05-23T00:00:00.000Z"
+    };
+    expect(exportCasesCsv([patientCase])).not.toContain("Eki Nn HERE");
+  });
 });

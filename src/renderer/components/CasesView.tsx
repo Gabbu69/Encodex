@@ -1,5 +1,5 @@
 import { ClipboardList, FilePlus2, PencilLine } from "lucide-react";
-import type { PatientCase } from "../../shared/domain";
+import { MIN_RELIABLE_NAME_OCR_CONFIDENCE, type PatientCase } from "../../shared/domain";
 import { documentLabel } from "../../shared/fields";
 
 interface CasesViewProps {
@@ -40,11 +40,18 @@ export function CasesView({ cases, onNew, onOpen }: CasesViewProps) {
             <span />
           </div>
           {cases.map((patientCase) => {
-            const reviewed = patientCase.selectedFieldIds.filter((fieldId) => patientCase.values[fieldId]?.confirmed).length;
+            const acceptedValue = (fieldId: string) => {
+              const value = patientCase.values[fieldId];
+              return Boolean(
+                value?.confirmed
+                && !(fieldId === "observed_name" && value.confidence !== undefined && value.confidence < MIN_RELIABLE_NAME_OCR_CONFIDENCE)
+              );
+            };
+            const reviewed = patientCase.selectedFieldIds.filter(acceptedValue).length;
             const officialName = patientCase.values.confirmed_official_name?.confirmed
               ? patientCase.values.confirmed_official_name.value
               : "";
-            const observedName = patientCase.values.observed_name?.confirmed
+            const observedName = acceptedValue("observed_name")
               ? patientCase.values.observed_name.value
               : "";
             const displayedName = officialName || observedName;

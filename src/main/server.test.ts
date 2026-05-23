@@ -16,15 +16,16 @@ async function harness(ocr = { async recognizeSelected() { return []; } }) {
   const folder = await mkdtemp(path.join(tmpdir(), "medical-api-"));
   folders.push(folder);
   const clipboard = { value: "", writeText(value: string) { this.value = value; }, clear() { this.value = ""; } };
+  const store = new VaultStore(folder);
   const app = createServer({
-    store: new VaultStore(folder),
+    store,
     clipboard,
     captureOrigin: () => "http://192.168.1.2:4179",
     ocr
   });
   const agent = request.agent(app);
   await agent.post("/api/setup").send({ password: "correct horse battery staple" }).expect(201);
-  return { agent, clipboard, app };
+  return { agent, clipboard, app, store };
 }
 
 async function capturePhoto(agent: request.SuperAgentTest, captureUrl: string) {
@@ -348,6 +349,34 @@ describe("selected-field privacy boundary", () => {
     expect(exported.text).not.toContain("MUST NOT STORE");
     await agent.post(`/api/cases/${caseId}/complete`).expect(200);
     expect((await agent.get("/api/cases").expect(200)).body).toEqual([]);
+  });
+
+  it("does not copy a low-confidence OCR name until an encoder corrects it", async () => {
+    const { agent, clipboard, store } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "xray", profileName: "Name Only", fieldIds: ["observed_name"] })
+      .expect(201);
+    await capturePhoto(agent, created.body.capture.url);
+    const caseId = created.body.patientCase.id as string;
+
+    await agent
+      .put(`/api/cases/${caseId}/review`)
+      .send({ values: { observed_name: { value: "Eki Nn HERE", confirmed: true, confidence: 9 } } })
+      .expect(400);
+    await store.updateData((data) => {
+      const patientCase = data.cases.find((entry) => entry.id === caseId)!;
+      patientCase.values.observed_name = { value: "Eki Nn HERE", confirmed: true, confidence: 9 };
+    });
+    await agent.post(`/api/cases/${caseId}/copy/observed_name`).expect(400);
+    expect(clipboard.value).toBe("");
+
+    await agent
+      .put(`/api/cases/${caseId}/review`)
+      .send({ values: { observed_name: { value: "SAMPLE, TEST NAME", confirmed: true } } })
+      .expect(200);
+    await agent.post(`/api/cases/${caseId}/copy/observed_name`).expect(200);
+    expect(clipboard.value).toBe("SAMPLE, TEST NAME");
   });
 
   it("uses a confirmed birthdate match to provide only requested master-list output", async () => {

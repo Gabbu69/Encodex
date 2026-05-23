@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import type { CaptureLink } from "../api";
 import { api } from "../api";
-import type { DocumentType, FieldDefinition, MatchCandidate, PatientCase, Region, StoredValue } from "../../shared/domain";
+import { MIN_RELIABLE_NAME_OCR_CONFIDENCE, type DocumentType, type FieldDefinition, type MatchCandidate, type PatientCase, type Region, type StoredValue } from "../../shared/domain";
 import { DOCUMENT_TYPES, documentLabel, requiresMasterMatch, sourceForDocument, supportsTypedName } from "../../shared/fields";
 
 interface CaseReviewProps {
@@ -58,7 +58,11 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   useEffect(() => {
     setDraft(
       Object.fromEntries(
-        patientCase.selectedFieldIds.map((fieldId) => [fieldId, patientCase.values[fieldId] ?? { value: "", confirmed: false }])
+        patientCase.selectedFieldIds.map((fieldId) => {
+          const value = patientCase.values[fieldId] ?? { value: "", confirmed: false };
+          const rejectedOcrName = fieldId === "observed_name" && value.confidence !== undefined && value.confidence < MIN_RELIABLE_NAME_OCR_CONFIDENCE;
+          return [fieldId, rejectedOcrName ? { value: "", confirmed: false, confidence: value.confidence } : value];
+        })
       )
     );
     setAlignment(patientCase.alignment);
@@ -92,7 +96,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     setClipboardReady(false);
     setDraft((current) => ({
       ...current,
-      [fieldId]: { ...current[fieldId], value, confirmed: false }
+      [fieldId]: { value, confirmed: false }
     }));
     if (fieldId === "observed_name") {
       setTransientName(value);
@@ -412,6 +416,10 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
       setNotice("Read or type the name before copying.");
       return;
     }
+    if (unreliableOcrName) {
+      setNotice("This OCR result is not reliable enough to copy. Type the correct name or scan the printed name line again.");
+      return;
+    }
     setPending("name-copy");
     setNotice("");
     setClipboardReady(false);
@@ -465,7 +473,18 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   const readsOnlyName = visibleScanFields.length === 1 && visibleScanFields[0].id === "observed_name";
   const nameOnly = selectedFields.length === 1 && selectedFields[0].id === "observed_name";
   const canNarrowToNameOnly = patientCase.selectedFieldIds.includes("observed_name") && !nameOnly;
-  const allReviewed = patientCase.selectedFieldIds.every((fieldId) => patientCase.values[fieldId]?.confirmed);
+  const allReviewed = patientCase.selectedFieldIds.every((fieldId) => {
+    const value = patientCase.values[fieldId];
+    return Boolean(
+      value?.confirmed
+      && !(fieldId === "observed_name" && value.confidence !== undefined && value.confidence < MIN_RELIABLE_NAME_OCR_CONFIDENCE)
+    );
+  });
+  const unreliableOcrName = Boolean(
+    nameOnly
+    && draft.observed_name?.confidence !== undefined
+    && draft.observed_name.confidence < MIN_RELIABLE_NAME_OCR_CONFIDENCE
+  );
 
   useEffect(() => {
     const automaticReadKey = patientCase.image ? `${patientCase.image.id}:${patientCase.documentType}:${patientCase.selectedFieldIds.join(",")}` : "";
@@ -564,10 +583,26 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
             </div>
           )}
           {patientCase.image && hasOcr && !(canNarrowToNameOnly && masterPatientCount === 0) && (
-            <button className="primary command scan-action" disabled={pending === "ocr"} onClick={() => void readTypedFields()}>
-              {pending === "ocr" ? <LoaderCircle className="spin" size={17} /> : <ScanText size={17} />}
-              {readsOnlyName ? (nameRegion ? "Read Name From Marked Area" : "Read Selected Name Only") : "Read Selected Typed Fields"}
-            </button>
+            <div className="scan-actions">
+              <button className="primary command scan-action" disabled={pending === "ocr"} onClick={() => void readTypedFields()}>
+                {pending === "ocr" ? <LoaderCircle className="spin" size={17} /> : <ScanText size={17} />}
+                {readsOnlyName ? (nameRegion ? "Read Name From Marked Area" : "Read Selected Name Only") : "Read Selected Typed Fields"}
+              </button>
+              {readsOnlyName && (
+                <button
+                  className={selectingNameRegion ? "primary command" : "secondary command"}
+                  onClick={() => {
+                    setNameRegion(undefined);
+                    setSelectingNameRegion((current) => !current);
+                    setNotice(selectingNameRegion ? "" : "Drag a box across only the printed name line in the source image.");
+                  }}
+                  disabled={pending === "ocr"}
+                >
+                  <ScanText size={17} />
+                  {selectingNameRegion ? "Cancel Selection" : "Select Name Line"}
+                </button>
+              )}
+            </div>
           )}
           {needsMatch && !(canNarrowToNameOnly && masterPatientCount === 0) && (
             <div className="match-panel">
@@ -650,13 +685,16 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
           </div>
           {nameOnly ? (
             <div className="name-copy-workflow">
+              {unreliableOcrName && (
+                <p className="unsafe-name-warning">OCR is too uncertain to copy. Type the correct name in the box or select the printed name line again.</p>
+              )}
               <button
                 className="primary command name-copy-action"
                 onClick={reviewAndCopyName}
-                disabled={!patientCase.image || !draft.observed_name?.value.trim() || pending === "name-copy" || pending === "ocr"}
+                disabled={!patientCase.image || !draft.observed_name?.value.trim() || unreliableOcrName || pending === "name-copy" || pending === "ocr"}
               >
                 {pending === "name-copy" ? <LoaderCircle className="spin" size={17} /> : <Clipboard size={17} />}
-                {draft.observed_name?.confirmed ? "Copy Name Again" : "Review & Copy Name"}
+                {unreliableOcrName ? "Correct Name Before Copying" : draft.observed_name?.confirmed ? "Copy Name Again" : "Review & Copy Name"}
               </button>
               <p>Check the spelling in the name box first. The green outline only marks the scan area; it does not copy by itself.</p>
             </div>
@@ -696,7 +734,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                       left: `${alignment.left * 100}%`
                     }}
                   />
-                  {visibleScanFields.filter((field) => field.id !== "observed_name" || !nameRegion).map((field) => {
+                  {visibleScanFields.filter((field) => field.id !== "observed_name" || (!nameRegion && !selectingNameRegion)).map((field) => {
                     const region = field.region![patientCase.documentType]!;
                     const availableWidth = 1 - alignment.left - alignment.right;
                     const availableHeight = 1 - alignment.top - alignment.bottom;

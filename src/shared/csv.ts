@@ -1,5 +1,5 @@
 import { FIELDS } from "./fields.js";
-import type { PatientCase } from "./domain.js";
+import { MIN_RELIABLE_NAME_OCR_CONFIDENCE, type PatientCase } from "./domain.js";
 
 function escapeCsv(value: string): string {
   if (/[",\r\n]/.test(value)) {
@@ -18,7 +18,11 @@ export function exportCasesCsv(cases: PatientCase[]): string {
       patientCase.selectedFieldIds.join("|"),
       patientCase.createdAt
     ];
-    const fieldValues = FIELDS.map((field) => patientCase.values[field.id]?.confirmed ? patientCase.values[field.id].value : "");
+    const fieldValues = FIELDS.map((field) => {
+      const value = patientCase.values[field.id];
+      const rejectedOcrName = field.id === "observed_name" && value?.confidence !== undefined && value.confidence < MIN_RELIABLE_NAME_OCR_CONFIDENCE;
+      return value?.confirmed && !rejectedOcrName ? value.value : "";
+    });
     return [...base, ...fieldValues].map(escapeCsv).join(",");
   });
   return [columns.join(","), ...rows].join("\r\n");
