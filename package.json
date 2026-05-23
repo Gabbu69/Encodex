@@ -1,0 +1,52 @@
+{
+  "name": "medical-scan-copy-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-only phone capture and verified copy assistant for medical encoding.",
+  "type": "module",
+  "main": "dist-main/main/index.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"npm:dev:desktop\"",
+    "dev:desktop": "wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 npm run build:main && electron .",
+    "build": "npm run build:main && vite build",
+    "clean:main": "node -e \"require('fs').rmSync('dist-main', { recursive: true, force: true })\"",
+    "build:main": "npm run clean:main && tsc -p tsconfig.main.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "start": "electron .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "cookie-parser": "^1.4.7",
+    "express": "^5.2.1",
+    "helmet": "^8.2.0",
+    "lucide-react": "^1.16.0",
+    "multer": "^2.1.1",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "read-excel-file": "^9.0.9",
+    "sharp": "^0.34.5",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^25.9.1",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@types/supertest": "^7.2.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^42.2.0",
+    "supertest": "^7.2.2",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.14",
+    "vitest": "^4.1.7",
+    "wait-on": "^9.0.10"
+  }
+}

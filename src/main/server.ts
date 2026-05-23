@@ -1,0 +1,659 @@
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import cookieParser from "cookie-parser";
+import express, { type NextFunction, type Request, type Response } from "express";
+import helmet from "helmet";
+import multer from "multer";
+import QRCode from "qrcode";
+import type { CapturePreset, DocumentType, PatientCase, StoredValue } from "../shared/domain.js";
+import { DEFAULT_ALIGNMENT } from "../shared/domain.js";
+import { exportCasesCsv } from "../shared/csv.js";
+import { BUILT_IN_PRESETS, FIELDS, isDocumentType, requiresMasterMatch, sourceForDocument, supportsTypedName, validSelectedFields } from "../shared/fields.js";
+import { findCandidates } from "../shared/matching.js";
+import { VaultStore, safeCase } from "./crypto-store.js";
+import { parsePatientRows, rowsToPatients, suggestMapping, type ImportMapping } from "./master-import.js";
+import { LocalOcr, type OcrSuggestion } from "./ocr.js";
+
+interface ClipboardPort {
+  writeText(value: string): void;
+  clear(): void;
+}
+
+interface OcrPort {
+  recognizeSelected(
+    bytes: Buffer,
+    documentType: DocumentType,
+    fields: typeof FIELDS,
+    alignment: PatientCase["alignment"]
+  ): Promise<OcrSuggestion[]>;
+}
+
+export interface ServerDependencies {
+  store: VaultStore;
+  ocr: OcrPort | LocalOcr;
+  clipboard: ClipboardPort;
+  rendererDirectory?: string;
+  captureOrigin: () => string;
+  now?: () => Date;
+}
+
+interface Session {
+  expiresAt: number;
+}
+
+const SESSION_COOKIE = "medical_encoder_session";
+const SESSION_TTL = 8 * 60 * 60 * 1000;
+const UPLOAD_TTL = 10 * 60 * 1000;
+const IMAGE_RETENTION = 7 * 24 * 60 * 60 * 1000;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024, files: 1 } });
+
+function iso(now: Date) {
+  return now.toISOString();
+}
+
+function hashToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function parameter(request: Request, name: string) {
+  return String(request.params[name]);
+}
+
+function localRequest(request: Request) {
+  const remote = request.socket.remoteAddress ?? "";
+  return remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+}
+
+function phonePage(token: string, success = false) {
+  if (success) {
+    return `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Uploaded</title><link rel="stylesheet" href="/capture.css"></head><body><main class="mobile-complete"><h1>Photo received</h1><p>Review continues on the laptop.</p></main></body></html>`;
+  }
+  return `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Capture document</title><link rel="stylesheet" href="/capture.css"></head><body><main class="mobile-capture"><h1>Document Capture</h1><p>Place the full page inside the camera frame.</p><form method="post" enctype="multipart/form-data" action="/capture/${token}"><label class="pick">Document photo<input required name="document" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"></label><button type="submit">Send To Laptop</button></form></main></body></html>`;
+}
+
+function requireCase(data: { cases: PatientCase[] }, caseId: string) {
+  const patientCase = data.cases.find((entry) => entry.id === caseId);
+  if (!patientCase) {
+    throw new Error("Case not found.");
+  }
+  return patientCase;
+}
+
+function selectedValuesOnly(patientCase: PatientCase, values: Record<string, StoredValue>) {
+  const selected = new Set(patientCase.selectedFieldIds);
+  return Object.fromEntries(Object.entries(values).filter(([fieldId]) => selected.has(fieldId)));
+}
+
+export function createServer(dependencies: ServerDependencies) {
+  const app = express();
+  const sessions = new Map<string, Session>();
+  let clipboardRevision = 0;
+  const now = () => dependencies.now?.() ?? new Date();
+
+  app.disable("x-powered-by");
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "blob:"],
+        styleSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        connectSrc: ["'self'"]
+      }
+    }
+  }));
+
+  app.get("/capture.css", (_request, response) => {
+    response.type("text/css").send(`
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #eef3f4; color: #17242b; font-family: "Segoe UI", Arial, sans-serif; }
+      main { width: min(100% - 32px, 430px); border: 1px solid #d4dce0; border-radius: 8px; background: #fff; padding: 26px 20px; }
+      h1 { margin: 0 0 10px; font-size: 23px; letter-spacing: 0; }
+      p { margin: 0 0 24px; color: #596c73; }
+      form { display: grid; gap: 14px; }
+      .pick { min-height: 58px; border: 1px dashed #98abb1; border-radius: 6px; padding: 18px 14px; display: grid; gap: 12px; font-weight: 600; }
+      input { width: 100%; }
+      button { height: 48px; border: 0; border-radius: 6px; color: #fff; background: #146b62; font: inherit; font-weight: 600; }
+      .mobile-complete { text-align: center; }
+      .mobile-complete p { margin-bottom: 0; }
+    `);
+  });
+
+  app.get("/capture/:token", async (request, response) => {
+    try {
+      if (!dependencies.store.isUnlocked()) {
+        response.status(423).send("The laptop app is locked. Ask the encoder to unlock it and create a new capture link.");
+        return;
+      }
+      const data = await dependencies.store.readData();
+      const token = parameter(request, "token");
+      const patientCase = data.cases.find((entry) => entry.uploadTokenHash === hashToken(token));
+      if (!patientCase || patientCase.uploadUsed || !patientCase.uploadExpiresAt || new Date(patientCase.uploadExpiresAt) <= now()) {
+        response.status(410).send("This capture link has expired or has already been used.");
+        return;
+      }
+      response.type("html").send(phonePage(token));
+    } catch (error) {
+      response.status(400).send((error as Error).message);
+    }
+  });
+
+  app.post("/capture/:token", upload.single("document"), async (request, response) => {
+    try {
+      if (!dependencies.store.isUnlocked()) {
+        response.status(423).send("The laptop app is locked.");
+        return;
+      }
+      if (!request.file || !["image/jpeg", "image/png", "image/webp"].includes(request.file.mimetype)) {
+        response.status(400).send("Upload one JPEG, PNG, or WebP document photo.");
+        return;
+      }
+      const tokenHash = hashToken(parameter(request, "token"));
+      const data = await dependencies.store.readData();
+      const patientCase = data.cases.find((entry) => entry.uploadTokenHash === tokenHash);
+      if (!patientCase || patientCase.uploadUsed || !patientCase.uploadExpiresAt || new Date(patientCase.uploadExpiresAt) <= now()) {
+        response.status(410).send("This capture link has expired or has already been used.");
+        return;
+      }
+      const imageId = dependencies.store.newId();
+      await dependencies.store.storeImage(imageId, request.file.buffer);
+      if (patientCase.image) {
+        await dependencies.store.deleteImage(patientCase.image.id);
+      }
+      patientCase.image = {
+        id: imageId,
+        uploadedAt: iso(now()),
+        expiresAt: new Date(now().getTime() + IMAGE_RETENTION).toISOString(),
+        mimeType: request.file.mimetype
+      };
+      patientCase.uploadUsed = true;
+      patientCase.updatedAt = iso(now());
+      await dependencies.store.updateData((stored) => {
+        const destination = requireCase(stored, patientCase.id);
+        Object.assign(destination, patientCase);
+      });
+      response.type("html").send(phonePage(parameter(request, "token"), true));
+    } catch (error) {
+      response.status(400).send((error as Error).message);
+    }
+  });
+
+  app.use("/api", (request, response, next) => {
+    if (!localRequest(request)) {
+      response.status(403).json({ error: "The desktop application may only be used on this laptop." });
+      return;
+    }
+    next();
+  });
+  app.use("/api", cookieParser(), express.json({ limit: "1mb" }));
+
+  app.get("/api/status", async (request, response) => {
+    const token = request.cookies?.[SESSION_COOKIE] as string | undefined;
+    const session = token ? sessions.get(token) : undefined;
+    const sessionUnlocked = dependencies.store.isUnlocked() && Boolean(session && session.expiresAt > now().getTime());
+    response.json({ initialized: await dependencies.store.initialized(), unlocked: sessionUnlocked });
+  });
+
+  function createSession(response: Response) {
+    const token = randomBytes(32).toString("hex");
+    sessions.set(token, { expiresAt: now().getTime() + SESSION_TTL });
+    response.cookie(SESSION_COOKIE, token, {
+      httpOnly: true,
+      sameSite: "strict",
+      maxAge: SESSION_TTL
+    });
+  }
+
+  app.post("/api/setup", async (request, response, next) => {
+    try {
+      await dependencies.store.setup(String(request.body.password ?? ""));
+      createSession(response);
+      response.status(201).json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/login", async (request, response, next) => {
+    try {
+      if (!(await dependencies.store.unlock(String(request.body.password ?? "")))) {
+        response.status(401).json({ error: "Incorrect app password." });
+        return;
+      }
+      await dependencies.store.purgeExpiredImages(now());
+      createSession(response);
+      response.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  function authenticated(request: Request, response: Response, next: NextFunction) {
+    const token = request.cookies?.[SESSION_COOKIE] as string | undefined;
+    const session = token ? sessions.get(token) : undefined;
+    if (!dependencies.store.isUnlocked() || !session || session.expiresAt <= now().getTime()) {
+      response.status(401).json({ error: "Unlock the application to continue." });
+      return;
+    }
+    session.expiresAt = now().getTime() + SESSION_TTL;
+    next();
+  }
+
+  app.use("/api", (request, response, next) => {
+    if (["/status", "/setup", "/login"].includes(request.path)) {
+      next();
+      return;
+    }
+    authenticated(request, response, next);
+  });
+
+  app.post("/api/logout", (_request, response) => {
+    dependencies.store.lock();
+    sessions.clear();
+    response.clearCookie(SESSION_COOKIE);
+    response.json({ ok: true });
+  });
+
+  app.get("/api/config", async (_request, response) => {
+    const data = await dependencies.store.readData();
+    response.json({
+      fields: FIELDS,
+      presets: [...BUILT_IN_PRESETS, ...data.customPresets],
+      masterPatientCount: data.masterPatients.length
+    });
+  });
+
+  app.post("/api/presets", async (request, response, next) => {
+    try {
+      const documentType = request.body.documentType as DocumentType;
+      const fieldIds = request.body.fieldIds as string[];
+      const name = String(request.body.name ?? "").trim();
+      if (!name || !isDocumentType(documentType) || !validSelectedFields(documentType, fieldIds)) {
+        response.status(400).json({ error: "Choose a name, document type, and at least one supported field." });
+        return;
+      }
+      const preset: CapturePreset = {
+        id: dependencies.store.newId(),
+        name,
+        builtIn: false,
+        documentType,
+        fieldIds
+      };
+      await dependencies.store.updateData((data) => {
+        data.customPresets.push(preset);
+      });
+      response.status(201).json(preset);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  async function issueUploadLink(patientCase: PatientCase) {
+    const token = randomBytes(28).toString("hex");
+    patientCase.uploadTokenHash = hashToken(token);
+    patientCase.uploadExpiresAt = new Date(now().getTime() + UPLOAD_TTL).toISOString();
+    patientCase.uploadUsed = false;
+    patientCase.updatedAt = iso(now());
+    const url = `${dependencies.captureOrigin()}/capture/${token}`;
+    return { url, qrDataUrl: await QRCode.toDataURL(url, { margin: 1, width: 280 }) };
+  }
+
+  app.post("/api/cases", async (request, response, next) => {
+    try {
+      const documentType = request.body.documentType as DocumentType;
+      const fieldIds = request.body.fieldIds as string[];
+      const profileName = String(request.body.profileName ?? "").trim();
+      const linkToCaseId = request.body.linkToCaseId ? String(request.body.linkToCaseId) : undefined;
+      if (!isDocumentType(documentType) || !validSelectedFields(documentType, fieldIds) || !profileName) {
+        response.status(400).json({ error: "Choose a supported form and one or more fields before capture." });
+        return;
+      }
+      const timestamp = iso(now());
+      const patientCase: PatientCase = {
+        id: dependencies.store.newId(),
+        documentType,
+        profileName,
+        selectedFieldIds: [...new Set(fieldIds)],
+        values: {},
+        alignment: { ...DEFAULT_ALIGNMENT },
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      const capture = await issueUploadLink(patientCase);
+      await dependencies.store.updateData((data) => {
+        if (linkToCaseId) {
+          const relatedCase = requireCase(data, linkToCaseId);
+          const groupId = relatedCase.patientGroupId ?? relatedCase.id;
+          relatedCase.patientGroupId = groupId;
+          relatedCase.updatedAt = timestamp;
+          patientCase.patientGroupId = groupId;
+        }
+        data.cases.unshift(patientCase);
+      });
+      response.status(201).json({ patientCase: safeCase(patientCase), capture });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/cases", async (_request, response) => {
+    const data = await dependencies.store.readData();
+    response.json(data.cases.map(safeCase));
+  });
+
+  app.get("/api/cases/:caseId", async (request, response) => {
+    const data = await dependencies.store.readData();
+    response.json(safeCase(requireCase(data, parameter(request, "caseId"))));
+  });
+
+  app.post("/api/cases/:caseId/capture-link", async (request, response, next) => {
+    try {
+      const data = await dependencies.store.readData();
+      const patientCase = requireCase(data, parameter(request, "caseId"));
+      const capture = await issueUploadLink(patientCase);
+      await dependencies.store.updateData((stored) => Object.assign(requireCase(stored, patientCase.id), patientCase));
+      response.json(capture);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/cases/:caseId/image", async (request, response, next) => {
+    try {
+      const patientCase = requireCase(await dependencies.store.readData(), parameter(request, "caseId"));
+      if (!patientCase.image) {
+        response.status(404).json({ error: "This case has no active source image." });
+        return;
+      }
+      response.type(patientCase.image.mimeType).send(await dependencies.store.readImage(patientCase.image.id));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put("/api/cases/:caseId/alignment", async (request, response, next) => {
+    try {
+      const rotation = Number(request.body.rotation);
+      const top = Number(request.body.top);
+      const right = Number(request.body.right);
+      const bottom = Number(request.body.bottom);
+      const left = Number(request.body.left);
+      if (![0, 90, 180, 270].includes(rotation) || [top, right, bottom, left].some((value) => !Number.isFinite(value) || value < 0 || value > 0.35) || top + bottom > 0.6 || left + right > 0.6) {
+        response.status(400).json({ error: "Alignment values are outside the supported document frame." });
+        return;
+      }
+      let updated: PatientCase | undefined;
+      await dependencies.store.updateData((data) => {
+        const patientCase = requireCase(data, parameter(request, "caseId"));
+        patientCase.alignment = { rotation: rotation as 0 | 90 | 180 | 270, top, right, bottom, left };
+        patientCase.updatedAt = iso(now());
+        updated = patientCase;
+      });
+      response.json(safeCase(updated!));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/cases/:caseId/ocr", async (request, response, next) => {
+    try {
+      const patientCase = requireCase(await dependencies.store.readData(), parameter(request, "caseId"));
+      if (!patientCase.image) {
+        response.status(400).json({ error: "Capture a document photo before reading typed fields." });
+        return;
+      }
+      const permitted = new Set(patientCase.selectedFieldIds);
+      if (requiresMasterMatch(patientCase.selectedFieldIds) && supportsTypedName(patientCase.documentType)) {
+        permitted.add("observed_name");
+      }
+      const requested = Array.isArray(request.body.fieldIds) ? (request.body.fieldIds as string[]) : [...permitted];
+      if (requested.some((fieldId) => !permitted.has(fieldId))) {
+        response.status(400).json({ error: "OCR is restricted to the selected capture profile." });
+        return;
+      }
+      const ocrFields = requested.flatMap((fieldId) => {
+        const field = FIELDS.find((entry) => entry.id === fieldId);
+        return field && sourceForDocument(field, patientCase.documentType) === "ocr" ? [field] : [];
+      });
+      const suggestions = await dependencies.ocr.recognizeSelected(
+        await dependencies.store.readImage(patientCase.image.id),
+        patientCase.documentType,
+        ocrFields,
+        patientCase.alignment
+      );
+      response.json({ suggestions });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put("/api/cases/:caseId/review", async (request, response, next) => {
+    try {
+      const supplied = (request.body.values ?? {}) as Record<string, StoredValue>;
+      let updated: PatientCase | undefined;
+      await dependencies.store.updateData((data) => {
+        const patientCase = requireCase(data, parameter(request, "caseId"));
+        if (!patientCase.image) {
+          throw new Error("Capture a document photo before reviewing selected fields.");
+        }
+        const selected = new Set(patientCase.selectedFieldIds);
+        if (Object.keys(supplied).some((fieldId) => !selected.has(fieldId))) {
+          throw new Error("Only fields chosen before capture may be retained.");
+        }
+        const reviewable = Object.entries(supplied).filter(([fieldId, entry]) => {
+          const field = FIELDS.find((candidate) => candidate.id === fieldId)!;
+          if (sourceForDocument(field, patientCase.documentType) !== "master") {
+            return true;
+          }
+          const submittedValue = String(entry.value ?? "").trim();
+          const existingValue = patientCase.values[fieldId]?.value ?? "";
+          if (submittedValue && submittedValue !== existingValue) {
+            throw new Error("Official identity values may only be set through a confirmed patient match.");
+          }
+          return false;
+        });
+        const cleaned = Object.fromEntries(
+          reviewable.map(([fieldId, entry]) => [
+            fieldId,
+            {
+              value: String(entry.value ?? "").trim(),
+              confirmed: Boolean(entry.confirmed),
+              confidence: typeof entry.confidence === "number" ? entry.confidence : undefined,
+              confirmedAt: entry.confirmed ? iso(now()) : undefined
+            }
+          ])
+        );
+        const identityChanged = ["observed_name", "birthdate"].some((fieldId) => {
+          const nextValue = cleaned[fieldId]?.value;
+          return nextValue !== undefined && nextValue !== patientCase.values[fieldId]?.value;
+        });
+        if (identityChanged && patientCase.matchedPatientId) {
+          delete patientCase.values.confirmed_official_name;
+          delete patientCase.values.philhealth_id;
+          patientCase.matchedPatientId = undefined;
+          patientCase.observedNameForMatch = undefined;
+        }
+        patientCase.values = selectedValuesOnly(patientCase, { ...patientCase.values, ...cleaned });
+        patientCase.updatedAt = iso(now());
+        updated = patientCase;
+      });
+      response.json(safeCase(updated!));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/cases/:caseId/match", async (request, response, next) => {
+    try {
+      const data = await dependencies.store.readData();
+      const patientCase = requireCase(data, parameter(request, "caseId"));
+      if (!patientCase.image) {
+        response.status(400).json({ error: "Capture a document photo before matching a patient." });
+        return;
+      }
+      if (!requiresMasterMatch(patientCase.selectedFieldIds)) {
+        response.status(400).json({ error: "This capture profile does not request corrected identity data." });
+        return;
+      }
+      const candidates = findCandidates(data.masterPatients, String(request.body.observedName ?? ""), String(request.body.birthdate ?? ""))
+        .map((candidate) => patientCase.selectedFieldIds.includes("philhealth_id") ? candidate : { ...candidate, philhealthId: undefined });
+      response.json({ candidates });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/cases/:caseId/match/confirm", async (request, response, next) => {
+    try {
+      const observedName = String(request.body.observedName ?? "").trim();
+      const birthdate = String(request.body.birthdate ?? "").trim();
+      const patientId = String(request.body.patientId ?? "");
+      let updated: PatientCase | undefined;
+      await dependencies.store.updateData((data) => {
+        const patientCase = requireCase(data, parameter(request, "caseId"));
+        if (!patientCase.image) {
+          throw new Error("Capture a document photo before confirming a patient match.");
+        }
+        if (!requiresMasterMatch(patientCase.selectedFieldIds)) {
+          throw new Error("This capture profile does not request corrected identity data.");
+        }
+        const selectedCandidate = findCandidates(data.masterPatients, observedName, birthdate).find((candidate) => candidate.patientId === patientId);
+        if (!selectedCandidate) {
+          throw new Error("The selected patient match is no longer valid.");
+        }
+        const confirmed: StoredValue = { value: selectedCandidate.officialName, confirmed: true, confirmedAt: iso(now()) };
+        if (patientCase.selectedFieldIds.includes("confirmed_official_name")) {
+          patientCase.values.confirmed_official_name = confirmed;
+          patientCase.observedNameForMatch = observedName;
+        }
+        if (patientCase.selectedFieldIds.includes("philhealth_id")) {
+          patientCase.values.philhealth_id = { value: selectedCandidate.philhealthId ?? "", confirmed: true, confirmedAt: iso(now()) };
+        }
+        if (patientCase.selectedFieldIds.includes("birthdate")) {
+          patientCase.values.birthdate = { value: selectedCandidate.birthdate, confirmed: true, confirmedAt: iso(now()) };
+        }
+        patientCase.matchedPatientId = selectedCandidate.patientId;
+        patientCase.updatedAt = iso(now());
+        updated = patientCase;
+      });
+      response.json(safeCase(updated!));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/cases/:caseId/copy/:fieldId", async (request, response, next) => {
+    try {
+      const patientCase = requireCase(await dependencies.store.readData(), parameter(request, "caseId"));
+      const fieldId = parameter(request, "fieldId");
+      if (!patientCase.selectedFieldIds.includes(fieldId) || !patientCase.values[fieldId]?.confirmed) {
+        response.status(400).json({ error: "Review and confirm this selected field before copying." });
+        return;
+      }
+      dependencies.clipboard.writeText(patientCase.values[fieldId].value);
+      const thisCopy = ++clipboardRevision;
+      setTimeout(() => {
+        if (clipboardRevision === thisCopy) {
+          dependencies.clipboard.clear();
+        }
+      }, 60_000);
+      response.json({ ok: true, clearsAfterSeconds: 60 });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/clipboard/clear", (_request, response) => {
+    clipboardRevision += 1;
+    dependencies.clipboard.clear();
+    response.json({ ok: true });
+  });
+
+  app.post("/api/master/preview", upload.single("file"), async (request, response, next) => {
+    try {
+      if (!request.file) {
+        response.status(400).json({ error: "Select a patient master CSV or Excel file." });
+        return;
+      }
+      const rows = await parsePatientRows(request.file.buffer, request.file.originalname);
+      const headers = rows[0] ?? [];
+      response.json({ headers, rowCount: Math.max(0, rows.length - 1), suggestedMapping: suggestMapping(headers) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/master/import", upload.single("file"), async (request, response, next) => {
+    try {
+      if (!request.file) {
+        response.status(400).json({ error: "Select a patient master CSV or Excel file." });
+        return;
+      }
+      const mapping = JSON.parse(String(request.body.mapping ?? "{}")) as ImportMapping;
+      const rows = await parsePatientRows(request.file.buffer, request.file.originalname);
+      const patients = rowsToPatients(rows, mapping);
+      await dependencies.store.updateData((data) => {
+        data.masterPatients = patients;
+        data.audit.push({
+          type: "master_list_replaced",
+          createdAt: iso(now()),
+          detail: `Approved patient master replaced with ${patients.length} entries.`
+        });
+      });
+      response.status(201).json({ imported: patients.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/export", async (request, response, next) => {
+    try {
+      const data = await dependencies.store.readData();
+      const caseIds = Array.isArray(request.body.caseIds) ? new Set(request.body.caseIds as string[]) : undefined;
+      const cases = caseIds ? data.cases.filter((patientCase) => caseIds.has(patientCase.id)) : data.cases;
+      await dependencies.store.updateData((stored) => {
+        stored.audit.push({ type: "csv_export", createdAt: iso(now()), detail: `${cases.length} selected case(s) exported.` });
+      });
+      response.setHeader("Content-Type", "text/csv; charset=utf-8");
+      response.setHeader("Content-Disposition", `attachment; filename="encodex-export-${now().toISOString().slice(0, 10)}.csv"`);
+      response.send(exportCasesCsv(cases));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/cases/:caseId/complete", async (request, response, next) => {
+    try {
+      const patientCase = requireCase(await dependencies.store.readData(), parameter(request, "caseId"));
+      if (!patientCase.selectedFieldIds.every((fieldId) => patientCase.values[fieldId]?.confirmed)) {
+        response.status(400).json({ error: "Every selected field must be reviewed before marking official entry complete." });
+        return;
+      }
+      await dependencies.store.removeCompletedCase(patientCase.id);
+      response.json({ ok: true, deleted: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  if (dependencies.rendererDirectory && existsSync(dependencies.rendererDirectory)) {
+    app.use((request, response, next) => {
+      if (!localRequest(request)) {
+        response.status(403).send("Open the capture link provided by the laptop application.");
+        return;
+      }
+      next();
+    });
+    app.use(express.static(dependencies.rendererDirectory));
+    app.get("/{*path}", (_request, response) => {
+      response.sendFile(path.join(dependencies.rendererDirectory!, "index.html"));
+    });
+  }
+
+  app.use((error: Error, _request: Request, response: Response, _next: NextFunction) => {
+    response.status(400).json({ error: error.message || "The request could not be completed." });
+  });
+
+  return app;
+}
