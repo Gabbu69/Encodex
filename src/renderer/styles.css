@@ -698,16 +698,32 @@ input[type="checkbox"] {
   place-items: center;
 }
 
-.document-preview img {
+.document-canvas {
+  position: relative;
+  display: inline-flex;
+  max-height: 100%;
+  max-width: 100%;
+  line-height: 0;
+  transition: transform 140ms ease;
+}
+
+.document-canvas img {
+  display: block;
   max-height: 100%;
   max-width: 100%;
   object-fit: contain;
-  transition: transform 140ms ease;
 }
 
 .alignment-guide {
   position: absolute;
   border: 2px solid var(--accent);
+  pointer-events: none;
+}
+
+.selected-scan-guide {
+  position: absolute;
+  border: 2px solid #167b70;
+  background: rgb(22 123 112 / 4%);
   pointer-events: none;
 }
 

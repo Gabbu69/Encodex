@@ -122,6 +122,11 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     setPending("ocr");
     setNotice("");
     try {
+      const changedAlignment = (["rotation", "top", "right", "bottom", "left"] as const)
+        .some((edge) => alignment[edge] !== patientCase.alignment[edge]);
+      if (changedAlignment) {
+        onCaseUpdate(await api.align(patientCase.id, alignment));
+      }
       const requested = selectedFields
         .filter((field) => sourceForDocument(field, patientCase.documentType) === "ocr" && field.region?.[patientCase.documentType])
         .map((field) => field.id);
@@ -233,6 +238,10 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   const hasOcr = selectedFields.some(
     (field) => sourceForDocument(field, patientCase.documentType) === "ocr" && field.region?.[patientCase.documentType]
   ) || (needsMatch && supportsTypedName(patientCase.documentType));
+  const visibleScanFields = selectedFields.filter(
+    (field) => sourceForDocument(field, patientCase.documentType) === "ocr" && field.region?.[patientCase.documentType]
+  );
+  const readsOnlyName = visibleScanFields.length === 1 && visibleScanFields[0].id === "observed_name";
   const allReviewed = patientCase.selectedFieldIds.every((fieldId) => patientCase.values[fieldId]?.confirmed);
 
   return (
@@ -282,7 +291,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
           {patientCase.image && hasOcr && (
             <button className="primary command scan-action" disabled={pending === "ocr"} onClick={readTypedFields}>
               {pending === "ocr" ? <LoaderCircle className="spin" size={17} /> : <ScanText size={17} />}
-              Read Selected Typed Fields
+              {readsOnlyName ? "Read Selected Name Only" : "Read Selected Typed Fields"}
             </button>
           )}
           {needsMatch && (
@@ -373,20 +382,40 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
           {patientCase.image ? (
             <>
               <div className="document-preview">
-                <img
-                  alt="Captured document"
-                  src={`/api/cases/${patientCase.id}/image?v=${encodeURIComponent(patientCase.updatedAt)}`}
-                  style={{ transform: `rotate(${alignment.rotation}deg)` }}
-                />
-                <div
-                  className="alignment-guide"
-                  style={{
-                    top: `${alignment.top * 100}%`,
-                    right: `${alignment.right * 100}%`,
-                    bottom: `${alignment.bottom * 100}%`,
-                    left: `${alignment.left * 100}%`
-                  }}
-                />
+                <div className="document-canvas" style={{ transform: `rotate(${alignment.rotation}deg)` }}>
+                  <img
+                    alt="Captured document"
+                    src={`/api/cases/${patientCase.id}/image?v=${encodeURIComponent(patientCase.updatedAt)}`}
+                  />
+                  <div
+                    className="alignment-guide"
+                    style={{
+                      top: `${alignment.top * 100}%`,
+                      right: `${alignment.right * 100}%`,
+                      bottom: `${alignment.bottom * 100}%`,
+                      left: `${alignment.left * 100}%`
+                    }}
+                  />
+                  {visibleScanFields.map((field) => {
+                    const region = field.region![patientCase.documentType]!;
+                    const availableWidth = 1 - alignment.left - alignment.right;
+                    const availableHeight = 1 - alignment.top - alignment.bottom;
+                    return (
+                      <div
+                        className="selected-scan-guide"
+                        key={field.id}
+                        title={`${field.label} scan area`}
+                        aria-label={`${field.label} scan area`}
+                        style={{
+                          top: `${(alignment.top + region.top * availableHeight) * 100}%`,
+                          left: `${(alignment.left + region.left * availableWidth) * 100}%`,
+                          width: `${region.width * availableWidth * 100}%`,
+                          height: `${region.height * availableHeight * 100}%`
+                        }}
+                      />
+                    );
+                  })}
+                </div>
               </div>
               <div className="alignment-controls">
                 <button

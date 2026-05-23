@@ -56,6 +56,9 @@ describe("selected-field privacy boundary", () => {
         .expect(201);
       expect(created.body.patientCase.documentType).toBe(documentType);
       expect(created.body.patientCase.selectedFieldIds).toEqual(["observed_name"]);
+      if (documentType === "xray") {
+        expect(created.body.patientCase.alignment).toMatchObject({ top: 0.16, bottom: 0.1 });
+      }
     }
   );
 

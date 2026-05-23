@@ -6,12 +6,20 @@ import type { Alignment, DocumentType, FieldDefinition } from "../shared/domain.
 const require = createRequire(import.meta.url);
 const englishData = require("@tesseract.js-data/eng") as { langPath: string; gzip: boolean };
 const MULTILINE_FIELD_IDS = new Set(["findings", "impression"]);
-const ENLARGED_SINGLE_LINE_FIELD_IDS = new Set(["pregnancy_test_result"]);
+const ENLARGED_SINGLE_LINE_FIELD_IDS = new Set(["observed_name", "pregnancy_test_result"]);
 
 export interface OcrSuggestion {
   fieldId: string;
   text: string;
   confidence: number;
+}
+
+export function normalizeRecognizedText(fieldId: string, text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (fieldId === "observed_name") {
+    return normalized.replace(/^NAME\s*[:.-]?\s*/i, "").trim();
+  }
+  return normalized;
 }
 
 export async function alignDocument(bytes: Buffer, alignment: Alignment) {
@@ -61,7 +69,7 @@ export class LocalOcr {
         .grayscale()
         .normalize();
       if (enlarge) {
-        cropPipeline = cropPipeline.resize({ width: width * 2 });
+        cropPipeline = cropPipeline.resize({ width: width * 3 }).sharpen();
       }
       const crop = await cropPipeline.png().toBuffer();
       const pageSegmentationMode = ENLARGED_SINGLE_LINE_FIELD_IDS.has(field.id)
@@ -75,7 +83,7 @@ export class LocalOcr {
       const result = await worker.recognize(crop);
       suggestions.push({
         fieldId: field.id,
-        text: result.data.text.replace(/\s+/g, " ").trim(),
+        text: normalizeRecognizedText(field.id, result.data.text),
         confidence: Math.round(result.data.confidence)
       });
     }

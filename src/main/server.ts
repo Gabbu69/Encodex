@@ -48,6 +48,13 @@ const UPLOAD_TTL = 10 * 60 * 1000;
 const IMAGE_RETENTION = 7 * 24 * 60 * 60 * 1000;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024, files: 1 } });
 
+function initialAlignment(documentType: DocumentType): PatientCase["alignment"] {
+  if (documentType === "xray") {
+    return { ...DEFAULT_ALIGNMENT, top: 0.16, bottom: 0.1 };
+  }
+  return { ...DEFAULT_ALIGNMENT };
+}
+
 function iso(now: Date) {
   return now.toISOString();
 }
@@ -425,7 +432,7 @@ export function createServer(dependencies: ServerDependencies) {
         profileName,
         selectedFieldIds: [...new Set(fieldIds)],
         values: {},
-        alignment: { ...DEFAULT_ALIGNMENT },
+        alignment: initialAlignment(documentType),
         createdAt: timestamp,
         updatedAt: timestamp
       };

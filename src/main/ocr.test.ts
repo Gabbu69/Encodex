@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { alignDocument } from "./ocr.js";
+import { alignDocument, normalizeRecognizedText } from "./ocr.js";
 
 describe("document rotation and alignment", () => {
   it("crops against rotated dimensions for a sideways photographed page", async () => {
@@ -13,5 +13,12 @@ describe("document rotation and alignment", () => {
 
     expect(metadata.width).toBe(320);
     expect(metadata.height).toBe(160);
+  });
+});
+
+describe("selected name OCR cleanup", () => {
+  it("removes a printed field label without correcting the recognized name", () => {
+    expect(normalizeRecognizedText("observed_name", "NAME: SAMPLE, RUBY JEAN\n")).toBe("SAMPLE, RUBY JEAN");
+    expect(normalizeRecognizedText("observed_name", "SAMPLO, RUBY JEAN")).toBe("SAMPLO, RUBY JEAN");
   });
 });

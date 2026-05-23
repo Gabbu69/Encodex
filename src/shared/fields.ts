@@ -37,7 +37,7 @@ export const FIELDS: FieldDefinition[] = [
     region: {
       urinalysis: region(0.14, 0.26, 0.38, 0.045),
       pregnancy_test: region(0.14, 0.322, 0.36, 0.045),
-      xray: region(0.12, 0.34, 0.43, 0.045)
+      xray: region(0.16, 0.34, 0.32, 0.024)
     }
   },
   {
