@@ -362,8 +362,8 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
         const qualityGuidance = nameReading?.qualityWarning ? ` ${nameReading.qualityWarning}` : "";
         setNotice(
           recognizedName
-            ? `Name detected. Verify its spelling, then select Review & Copy Name.${fitGuidance}${qualityGuidance}`
-            : `The name was not clear. Drag a box over the printed name on the photo, or type it above, then select Review & Copy Name.${fitGuidance}${qualityGuidance}`
+            ? `Name detected from the page. Verify its spelling, then select Review & Copy Name. Only this selected name is kept.${fitGuidance}${qualityGuidance}`
+            : `The name was not clear. Choose Pick Name Row and click the printed name, or type it above, then select Review & Copy Name.${fitGuidance}${qualityGuidance}`
         );
       } else if (readsOnlyName) {
         const nameReading = result.suggestions.find((suggestion) => suggestion.fieldId === "observed_name");
@@ -622,9 +622,20 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
           )}
           {patientCase.image && hasOcr && !(canNarrowToNameOnly && masterPatientCount === 0) && (
             <div className="scan-actions">
-              <button className="primary command scan-action" disabled={pending === "ocr"} onClick={() => void readTypedFields()}>
+              <button
+                className="primary command scan-action"
+                disabled={pending === "ocr"}
+                onClick={() => {
+                  if (readsOnlyName) {
+                    setNameRegion(undefined);
+                    void readTypedFields(alignment, false, null);
+                    return;
+                  }
+                  void readTypedFields();
+                }}
+              >
                 {pending === "ocr" ? <LoaderCircle className="spin" size={17} /> : <ScanText size={17} />}
-                {readsOnlyName ? (nameRegion ? "Read Name From Marked Area" : "Read Selected Name Only") : "Read Selected Typed Fields"}
+                {readsOnlyName ? "Find Name On Page" : "Read Selected Typed Fields"}
               </button>
               {readsOnlyName && (
                 <button
@@ -734,7 +745,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                 {pending === "name-copy" ? <LoaderCircle className="spin" size={17} /> : <Clipboard size={17} />}
                 {unreliableOcrName ? "Correct Name Before Copying" : draft.observed_name?.confirmed ? "Copy Name Again" : "Review & Copy Name"}
               </button>
-              <p>Check the spelling in the name box first. The green outline only marks the scan area; it does not copy by itself.</p>
+              <p>Check the spelling before copying. Page finding returns only this selected name value.</p>
             </div>
           ) : (
             <button className="primary command save-review" onClick={saveReview} disabled={pending === "save"}>
@@ -789,7 +800,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                       left: `${alignment.left * 100}%`
                     }}
                   />
-                  {visibleScanFields.filter((field) => field.id !== "observed_name" || (!nameRegion && !selectingNameRegion)).map((field) => {
+                  {visibleScanFields.filter((field) => field.id !== "observed_name" || (!readsOnlyName && !nameRegion && !selectingNameRegion)).map((field) => {
                     const region = field.region![patientCase.documentType]!;
                     const availableWidth = 1 - alignment.left - alignment.right;
                     const availableHeight = 1 - alignment.top - alignment.bottom;

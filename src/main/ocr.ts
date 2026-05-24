@@ -121,6 +121,18 @@ async function recognizeWithWindowsOcr(crop: Buffer) {
   });
 }
 
+const FOLLOWING_NAME_LABEL = /(?:AGE|SEX|DATE|BDATE|BIRTHDATE|TYPE\s+OF\s+PROCEDURE|EXAMINATION\s+DESIRED|PHYSICIAN|REQUESTING\s+PHYSICIAN|SECTION|WARD|CASE\s*#|DIAGNOSIS|OR\s*#|FILE\s+NO)\s*[:.-]?/i;
+
+export function extractNameFromDocumentText(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const labeled = normalized.match(/\b(?:NAME|N[AI]ME)\s*[:.-]?\s*(.*)$/i);
+  if (!labeled) {
+    return "";
+  }
+  const value = labeled[1].split(FOLLOWING_NAME_LABEL, 1)[0] ?? "";
+  return normalizeRecognizedText("observed_name", value).replace(/^[_|]+\s*|\s*[_|]+$/g, "").trim();
+}
+
 export function usableNameText(text: string) {
   const words = (text.match(/[A-Za-z]{2,}/g) ?? []).map((word) => word.toUpperCase());
   return words.length >= 2 && words.join("").length >= 6 && !words.some((word) => FORM_HEADING_WORDS.has(word));
@@ -295,10 +307,18 @@ export class LocalOcr {
       const height = Math.max(1, Math.round(region.height * sourceHeight));
       if (field.id === "observed_name") {
         let detectedRegion: Region | undefined;
-        let nameSuggestion = await this.recognizeName(worker, sourceImage, { left, top, width, height }, true);
+        rotated ??= await sharp(bytes).rotate(alignment.rotation).png().toBuffer();
+        let nameSuggestion = override
+          ? await this.recognizeName(worker, sourceImage, { left, top, width, height }, true)
+          : await this.recognizeNameFromPage(worker, rotated);
         let measuredHeight = height;
+        if (!override && (!nameSuggestion.text || nameSuggestion.confidence < 85)) {
+          const croppedName = await this.recognizeName(worker, sourceImage, { left, top, width, height }, true);
+          if (croppedName.text && croppedName.confidence > nameSuggestion.confidence) {
+            nameSuggestion = croppedName;
+          }
+        }
         if (documentType === "xray" && !override && (!nameSuggestion.text || nameSuggestion.confidence < 85)) {
-          rotated ??= await sharp(bytes).rotate(alignment.rotation).png().toBuffer();
           const sourceMetadata = await sharp(rotated).metadata();
           if (sourceMetadata.width && sourceMetadata.height) {
             for (const candidateRegion of XRAY_SOURCE_NAME_REGIONS) {
@@ -416,6 +436,56 @@ export class LocalOcr {
     const tesseractReading = bestNameCandidate(candidates);
     if (allowWindowsFallback && (!tesseractReading.text || tesseractReading.confidence < 90) && windowsCrop) {
       const windowsText = normalizeRecognizedText("observed_name", await recognizeWithWindowsOcr(windowsCrop));
+      if (usableNameText(windowsText)) {
+        candidates.push({ text: windowsText, confidence: WINDOWS_NAME_REVIEW_SCORE, ocrEngine: "windows" });
+      }
+    }
+    return bestNameCandidate(candidates);
+  }
+
+  private async recognizeNameFromPage(
+    worker: Awaited<ReturnType<typeof Tesseract.createWorker>>,
+    page: Buffer
+  ): Promise<NameCandidate> {
+    await worker.setParameters({
+      tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+      tessedit_char_whitelist: "",
+      preserve_interword_spaces: "1"
+    });
+    const metadata = await sharp(page).metadata();
+    const sourceWidth = metadata.width ?? 1800;
+    const targetWidth = Math.min(3000, Math.max(1800, sourceWidth));
+    const candidates: NameCandidate[] = [];
+    let windowsPage: Buffer | undefined;
+    for (const pass of [
+      { normalize: true, threshold: undefined },
+      { normalize: true, threshold: 182 }
+    ]) {
+      let pipeline = sharp(page)
+        .resize({ width: targetWidth, withoutEnlargement: false, kernel: "lanczos3" })
+        .grayscale()
+        .sharpen();
+      if (pass.normalize) {
+        pipeline = pipeline.normalize();
+      }
+      if (pass.threshold !== undefined) {
+        pipeline = pipeline.threshold(pass.threshold);
+      }
+      const prepared = await pipeline.png().toBuffer();
+      windowsPage ??= prepared;
+      const result = await worker.recognize(prepared);
+      const text = extractNameFromDocumentText(result.data.text);
+      if (usableNameText(text)) {
+        candidates.push({
+          text,
+          confidence: Math.round(result.data.confidence),
+          ocrEngine: "tesseract"
+        });
+      }
+    }
+    const tesseractReading = bestNameCandidate(candidates);
+    if ((!tesseractReading.text || tesseractReading.confidence < 90) && windowsPage) {
+      const windowsText = extractNameFromDocumentText(await recognizeWithWindowsOcr(windowsPage));
       if (usableNameText(windowsText)) {
         candidates.push({ text: windowsText, confidence: WINDOWS_NAME_REVIEW_SCORE, ocrEngine: "windows" });
       }

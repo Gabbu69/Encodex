@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { alignDocument, bestNameCandidate, normalizeRecognizedText, suggestXrayScreenAlignment, usableNameText } from "./ocr.js";
+import { alignDocument, bestNameCandidate, extractNameFromDocumentText, normalizeRecognizedText, suggestXrayScreenAlignment, usableNameText } from "./ocr.js";
 
 describe("document rotation and alignment", () => {
   it("crops against rotated dimensions for a sideways photographed page", async () => {
@@ -75,5 +75,14 @@ describe("selected name OCR cleanup", () => {
   it("identifies the offline OCR engine used for a name suggestion", () => {
     expect(bestNameCandidate([{ text: "SAMPLE, RUBY JEAN", confidence: 86, ocrEngine: "windows" }]))
       .toEqual({ text: "SAMPLE, RUBY JEAN", confidence: 86, ocrEngine: "windows" });
+  });
+
+  it("returns only the name following its full-page label", () => {
+    expect(extractNameFromDocumentText(
+      "FILE NO: 26-2861 DATE: 05-11-2026 NAME: __ SOLOMON, RUBY JEAN AGE: 21 Y/O SEX: FEMALE TYPE OF PROCEDURE: CHEST PA"
+    )).toBe("SOLOMON, RUBY JEAN");
+    expect(extractNameFromDocumentText(
+      "RADIOLOGY DEPARTMENT NAME: SOLOMON. RUBY JEAN TYPE OF PROCEDURE: CHEST PA DIAGNOSIS: P.E."
+    )).toBe("SOLOMON. RUBY JEAN");
   });
 });
