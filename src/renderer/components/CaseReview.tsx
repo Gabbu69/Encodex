@@ -298,6 +298,9 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
           }));
         }
         if (suggestion.fieldId === "observed_name") {
+          if (suggestion.detectedRegion && !selectedNameRegion) {
+            setNameRegion(suggestion.detectedRegion);
+          }
           setTransientName(suggestion.text);
         }
         if (suggestion.fieldId === "birthdate") {

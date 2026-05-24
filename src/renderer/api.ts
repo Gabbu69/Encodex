@@ -61,7 +61,7 @@ export const api = {
   align: (id: string, alignment: Alignment) =>
     json<PatientCase>(`/api/cases/${id}/alignment`, { method: "PUT", body: JSON.stringify(alignment) }),
   ocr: (id: string, fieldIds: string[], nameRegion?: Region) =>
-    json<{ suggestions: Array<{ fieldId: string; text: string; confidence: number; qualityWarning?: string }> }>(`/api/cases/${id}/ocr`, {
+    json<{ suggestions: Array<{ fieldId: string; text: string; confidence: number; qualityWarning?: string; detectedRegion?: Region }> }>(`/api/cases/${id}/ocr`, {
       method: "POST",
       body: JSON.stringify({ fieldIds, nameRegion })
     }),

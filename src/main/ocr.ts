@@ -13,6 +13,7 @@ export interface OcrSuggestion {
   text: string;
   confidence: number;
   qualityWarning?: string;
+  detectedRegion?: Region;
 }
 
 export function normalizeRecognizedText(fieldId: string, text: string) {
@@ -28,7 +29,26 @@ interface NameCandidate {
   confidence: number;
 }
 
-const FORM_HEADING_WORDS = new Set(["RADIOLOGY", "DEPARTMENT", "HOSPITAL", "UNIVERSITY", "FINDINGS", "IMPRESSION", "PROCEDURE", "PHYSICIAN"]);
+const FORM_HEADING_WORDS = new Set([
+  "RADIOLOGY",
+  "DEPARTMENT",
+  "HOSPITAL",
+  "UNIVERSITY",
+  "FINDINGS",
+  "IMPRESSION",
+  "PROCEDURE",
+  "ROCEDURE",
+  "PHYSICIAN",
+  "DIAGNOSIS",
+  "CHEST",
+  "SECTION"
+]);
+const XRAY_SOURCE_NAME_REGIONS: Region[] = [0.36, 0.37, 0.38, 0.39, 0.4, 0.405, 0.41].map((top) => ({
+  left: 0.16,
+  top,
+  width: 0.29,
+  height: 0.018
+}));
 
 export function usableNameText(text: string) {
   const words = (text.match(/[A-Za-z]{2,}/g) ?? []).map((word) => word.toUpperCase());
@@ -201,11 +221,36 @@ export class LocalOcr {
       const width = Math.max(1, Math.round(region.width * sourceWidth));
       const height = Math.max(1, Math.round(region.height * sourceHeight));
       if (field.id === "observed_name") {
-        const nameSuggestion = await this.recognizeName(worker, sourceImage, { left, top, width, height });
+        let detectedRegion: Region | undefined;
+        let nameSuggestion = await this.recognizeName(worker, sourceImage, { left, top, width, height });
+        let measuredHeight = height;
+        if (documentType === "xray" && !override && (!nameSuggestion.text || nameSuggestion.confidence < 85)) {
+          rotated ??= await sharp(bytes).rotate(alignment.rotation).png().toBuffer();
+          const sourceMetadata = await sharp(rotated).metadata();
+          if (sourceMetadata.width && sourceMetadata.height) {
+            for (const candidateRegion of XRAY_SOURCE_NAME_REGIONS) {
+              const candidate = await this.recognizeName(worker, rotated, {
+                left: Math.round(candidateRegion.left * sourceMetadata.width),
+                top: Math.round(candidateRegion.top * sourceMetadata.height),
+                width: Math.round(candidateRegion.width * sourceMetadata.width),
+                height: Math.round(candidateRegion.height * sourceMetadata.height)
+              });
+              if (candidate.text && candidate.confidence > nameSuggestion.confidence) {
+                nameSuggestion = candidate;
+                detectedRegion = candidateRegion;
+                measuredHeight = Math.round(candidateRegion.height * sourceMetadata.height);
+              }
+              if (candidate.text && candidate.confidence >= 85) {
+                break;
+              }
+            }
+          }
+        }
         suggestions.push({
           fieldId: field.id,
           ...nameSuggestion,
-          qualityWarning: height < 14 || nameSuggestion.confidence < 65
+          detectedRegion,
+          qualityWarning: measuredHeight < 14 || nameSuggestion.confidence < 65
             ? "Image quality is low for reliable name reading. Retake a close-up photo of the physical paper, not a screen, or type and review the name manually."
             : undefined
         });
