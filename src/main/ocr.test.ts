@@ -49,6 +49,7 @@ describe("document rotation and alignment", () => {
 describe("selected name OCR cleanup", () => {
   it("removes a printed field label without correcting the recognized name", () => {
     expect(normalizeRecognizedText("observed_name", "NAME: SAMPLE, RUBY JEAN\n")).toBe("SAMPLE, RUBY JEAN");
+    expect(normalizeRecognizedText("observed_name", "VIE: SAMPLE, RUBY JEAN\n")).toBe("SAMPLE, RUBY JEAN");
     expect(normalizeRecognizedText("observed_name", "SAMPLO, RUBY JEAN")).toBe("SAMPLO, RUBY JEAN");
   });
 
@@ -69,5 +70,10 @@ describe("selected name OCR cleanup", () => {
       { text: "SAMPLE, RUBY JEAN", confidence: 74 },
       { text: "SAMPLE, RUBY IEAN", confidence: 66 }
     ])).toEqual({ text: "SAMPLE, RUBY JEAN", confidence: 74 });
+  });
+
+  it("identifies the offline OCR engine used for a name suggestion", () => {
+    expect(bestNameCandidate([{ text: "SAMPLE, RUBY JEAN", confidence: 86, ocrEngine: "windows" }]))
+      .toEqual({ text: "SAMPLE, RUBY JEAN", confidence: 86, ocrEngine: "windows" });
   });
 });

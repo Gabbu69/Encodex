@@ -1,5 +1,6 @@
 export type DocumentType = "urinalysis" | "pregnancy_test" | "xray" | "medical_certificate";
 export type FieldSource = "ocr" | "manual" | "master";
+export type OcrEngine = "tesseract" | "windows";
 export type FieldCategory =
   | "Patient identity"
   | "Header"
@@ -41,6 +42,7 @@ export interface StoredValue {
   value: string;
   confirmed: boolean;
   confidence?: number;
+  ocrEngine?: OcrEngine;
   confirmedAt?: string;
 }
 

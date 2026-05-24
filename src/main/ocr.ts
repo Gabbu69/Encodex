@@ -1,7 +1,8 @@
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import sharp from "sharp";
 import Tesseract from "tesseract.js";
-import { MIN_RELIABLE_NAME_OCR_CONFIDENCE, type Alignment, type DocumentType, type FieldDefinition, type Region } from "../shared/domain.js";
+import { MIN_RELIABLE_NAME_OCR_CONFIDENCE, type Alignment, type DocumentType, type FieldDefinition, type OcrEngine, type Region } from "../shared/domain.js";
 
 const require = createRequire(import.meta.url);
 const englishData = require("@tesseract.js-data/eng") as { langPath: string; gzip: boolean };
@@ -12,6 +13,7 @@ export interface OcrSuggestion {
   fieldId: string;
   text: string;
   confidence: number;
+  ocrEngine?: OcrEngine;
   qualityWarning?: string;
   detectedRegion?: Region;
 }
@@ -19,7 +21,10 @@ export interface OcrSuggestion {
 export function normalizeRecognizedText(fieldId: string, text: string) {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (fieldId === "observed_name") {
-    return normalized.replace(/^NAME\s*[:.-]?\s*/i, "").trim();
+    return normalized
+      .replace(/^NAME\s*[:.-]?\s*/i, "")
+      .replace(/^(?:N[AI]ME|VIE|ME)\s*[:.-]\s*/i, "")
+      .trim();
   }
   return normalized;
 }
@@ -27,6 +32,7 @@ export function normalizeRecognizedText(fieldId: string, text: string) {
 interface NameCandidate {
   text: string;
   confidence: number;
+  ocrEngine?: OcrEngine;
 }
 
 const FORM_HEADING_WORDS = new Set([
@@ -49,6 +55,71 @@ const XRAY_SOURCE_NAME_REGIONS: Region[] = [0.36, 0.37, 0.38, 0.39, 0.4, 0.405, 
   width: 0.29,
   height: 0.018
 }));
+const WINDOWS_NAME_REVIEW_SCORE = 86;
+const WINDOWS_OCR_SCRIPT = String.raw`Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null=[Windows.Storage.Streams.InMemoryRandomAccessStream,Windows.Storage.Streams,ContentType=WindowsRuntime]
+$null=[Windows.Storage.Streams.DataWriter,Windows.Storage.Streams,ContentType=WindowsRuntime]
+$null=[Windows.Graphics.Imaging.BitmapDecoder,Windows.Graphics.Imaging,ContentType=WindowsRuntime]
+$null=[Windows.Graphics.Imaging.SoftwareBitmap,Windows.Graphics.Imaging,ContentType=WindowsRuntime]
+$null=[Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime]
+$null=[Windows.Media.Ocr.OcrResult,Windows.Foundation,ContentType=WindowsRuntime]
+$method=([System.WindowsRuntimeSystemExtensions].GetMethods()|Where-Object{$_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetGenericArguments().Count -eq 1 -and $_.GetParameters().Count -eq 1})[0]
+function Await($operation,[Type]$resultType){$task=$method.MakeGenericMethod($resultType).Invoke($null,@($operation));[void]$task.Wait(15000);$task.Result}
+$bytes=[Convert]::FromBase64String([Console]::In.ReadToEnd())
+$stream=[Windows.Storage.Streams.InMemoryRandomAccessStream]::new()
+$writer=[Windows.Storage.Streams.DataWriter]::new($stream.GetOutputStreamAt(0))
+$writer.WriteBytes($bytes)
+[void](Await ($writer.StoreAsync()) ([UInt32]))
+[void](Await ($writer.FlushAsync()) ([Boolean]))
+[void]$writer.DetachStream()
+$stream.Seek(0)
+$decoder=Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bitmap=Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if($null -ne $engine){$result=Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult]);[Console]::Out.Write($result.Text)}`;
+
+async function recognizeWithWindowsOcr(crop: Buffer) {
+  if (process.platform !== "win32") {
+    return "";
+  }
+  const encodedScript = Buffer.from(WINDOWS_OCR_SCRIPT, "utf16le").toString("base64");
+  return new Promise<string>((resolve) => {
+    const child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedScript],
+      { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] }
+    );
+    let output = "";
+    let complete = false;
+    const finish = (text: string) => {
+      if (!complete) {
+        complete = true;
+        resolve(text);
+      }
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish("");
+    }, 18000);
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      output += chunk;
+    });
+    child.on("error", () => {
+      clearTimeout(timeout);
+      finish("");
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      finish(code === 0 ? output.trim() : "");
+    });
+    child.stdin.on("error", () => {
+      clearTimeout(timeout);
+      finish("");
+    });
+    child.stdin.end(crop.toString("base64"));
+  });
+}
 
 export function usableNameText(text: string) {
   const words = (text.match(/[A-Za-z]{2,}/g) ?? []).map((word) => word.toUpperCase());
@@ -70,7 +141,9 @@ export function bestNameCandidate(candidates: NameCandidate[]) {
   if (scored[0].confidence < MIN_RELIABLE_NAME_OCR_CONFIDENCE) {
     return { text: "", confidence: scored[0].confidence };
   }
-  return { text: scored[0].text, confidence: scored[0].confidence };
+  return scored[0].ocrEngine
+    ? { text: scored[0].text, confidence: scored[0].confidence, ocrEngine: scored[0].ocrEngine }
+    : { text: scored[0].text, confidence: scored[0].confidence };
 }
 
 export async function alignDocument(bytes: Buffer, alignment: Alignment) {
@@ -222,7 +295,7 @@ export class LocalOcr {
       const height = Math.max(1, Math.round(region.height * sourceHeight));
       if (field.id === "observed_name") {
         let detectedRegion: Region | undefined;
-        let nameSuggestion = await this.recognizeName(worker, sourceImage, { left, top, width, height });
+        let nameSuggestion = await this.recognizeName(worker, sourceImage, { left, top, width, height }, true);
         let measuredHeight = height;
         if (documentType === "xray" && !override && (!nameSuggestion.text || nameSuggestion.confidence < 85)) {
           rotated ??= await sharp(bytes).rotate(alignment.rotation).png().toBuffer();
@@ -234,7 +307,7 @@ export class LocalOcr {
                 top: Math.round(candidateRegion.top * sourceMetadata.height),
                 width: Math.round(candidateRegion.width * sourceMetadata.width),
                 height: Math.round(candidateRegion.height * sourceMetadata.height)
-              });
+              }, false);
               if (candidate.text && candidate.confidence > nameSuggestion.confidence) {
                 nameSuggestion = candidate;
                 detectedRegion = candidateRegion;
@@ -305,7 +378,8 @@ export class LocalOcr {
   private async recognizeName(
     worker: Awaited<ReturnType<typeof Tesseract.createWorker>>,
     aligned: Buffer,
-    region: { left: number; top: number; width: number; height: number }
+    region: { left: number; top: number; width: number; height: number },
+    allowWindowsFallback: boolean
   ): Promise<NameCandidate> {
     await worker.setParameters({
       tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE,
@@ -313,6 +387,7 @@ export class LocalOcr {
       preserve_interword_spaces: "1"
     });
     const candidates: NameCandidate[] = [];
+    let windowsCrop: Buffer | undefined;
     for (const pass of [
       { height: 96, threshold: undefined },
       { height: 150, threshold: undefined },
@@ -327,11 +402,23 @@ export class LocalOcr {
       if (pass.threshold !== undefined) {
         pipeline = pipeline.threshold(pass.threshold);
       }
-      const result = await worker.recognize(await pipeline.png().toBuffer());
+      const crop = await pipeline.png().toBuffer();
+      if (pass.height === 150 && pass.threshold === undefined) {
+        windowsCrop = crop;
+      }
+      const result = await worker.recognize(crop);
       candidates.push({
         text: normalizeRecognizedText("observed_name", result.data.text),
-        confidence: Math.round(result.data.confidence)
+        confidence: Math.round(result.data.confidence),
+        ocrEngine: "tesseract"
       });
+    }
+    const tesseractReading = bestNameCandidate(candidates);
+    if (allowWindowsFallback && (!tesseractReading.text || tesseractReading.confidence < 90) && windowsCrop) {
+      const windowsText = normalizeRecognizedText("observed_name", await recognizeWithWindowsOcr(windowsCrop));
+      if (usableNameText(windowsText)) {
+        candidates.push({ text: windowsText, confidence: WINDOWS_NAME_REVIEW_SCORE, ocrEngine: "windows" });
+      }
     }
     return bestNameCandidate(candidates);
   }

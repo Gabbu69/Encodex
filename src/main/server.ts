@@ -603,6 +603,32 @@ export function createServer(dependencies: ServerDependencies) {
     }
   });
 
+  app.post("/api/cases/:caseId/image", (request, response) => {
+    upload.single("document")(request, response, (uploadError) => {
+      if (uploadError) {
+        const message = uploadError instanceof multer.MulterError && uploadError.code === "LIMIT_FILE_SIZE"
+          ? "This photo is over 12 MB. Choose a smaller image."
+          : "Choose one JPEG, PNG, or WebP document photo and try again.";
+        response.status(400).json({ error: message });
+        return;
+      }
+      void (async () => {
+        try {
+          if (!request.file || !["image/jpeg", "image/png", "image/webp"].includes(request.file.mimetype)) {
+            response.status(400).json({ error: "Choose one JPEG, PNG, or WebP document photo and try again." });
+            return;
+          }
+          const patientCase = requireCase(await dependencies.store.readData(), parameter(request, "caseId"));
+          await storeUploadedPhoto(patientCase, request.file);
+          await dependencies.store.updateData((stored) => Object.assign(requireCase(stored, patientCase.id), patientCase));
+          response.json(safeCase(patientCase));
+        } catch (error) {
+          response.status(400).json({ error: (error as Error).message });
+        }
+      })();
+    });
+  });
+
   app.get("/api/cases/:caseId/image", async (request, response, next) => {
     try {
       const patientCase = requireCase(await dependencies.store.readData(), parameter(request, "caseId"));
@@ -834,6 +860,7 @@ export function createServer(dependencies: ServerDependencies) {
               value: String(entry.value ?? "").trim(),
               confirmed: Boolean(entry.confirmed),
               confidence: typeof entry.confidence === "number" ? entry.confidence : undefined,
+              ocrEngine: entry.ocrEngine === "windows" || entry.ocrEngine === "tesseract" ? entry.ocrEngine : undefined,
               confirmedAt: entry.confirmed ? iso(now()) : undefined
             }
           ])

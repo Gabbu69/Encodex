@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   AlignCenter,
   CheckCircle2,
   Clipboard,
   ClipboardX,
+  ImageUp,
   Link2,
   LoaderCircle,
   RefreshCw,
@@ -44,6 +45,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
   const [selectingNameRegion, setSelectingNameRegion] = useState(false);
   const automaticReadImage = useRef("");
   const nameRegionStart = useRef<{ x: number; y: number } | undefined>(undefined);
+  const laptopPhotoInput = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setClipboardReady(false);
@@ -125,6 +127,27 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     }
   }
 
+  async function uploadLaptopPhoto(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    setPending("photo");
+    setNotice("");
+    setClipboardReady(false);
+    automaticReadImage.current = "";
+    try {
+      const updated = await api.uploadCasePhoto(patientCase.id, file);
+      onCaseUpdate(updated);
+      setNotice("Image loaded from this laptop. Reading only the selected fields.");
+    } catch (caught) {
+      setNotice((caught as Error).message);
+    } finally {
+      setPending("");
+    }
+  }
+
   async function applyAlignment() {
     setPending("alignment");
     setNotice("");
@@ -189,6 +212,17 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     };
   }
 
+  function nameBandAt(point: { x: number; y: number }): Region {
+    const width = patientCase.documentType === "xray" ? 0.42 : 0.46;
+    const height = patientCase.documentType === "xray" ? 0.022 : 0.035;
+    return {
+      left: Math.max(0, Math.min(1 - width, point.x - width / 2)),
+      top: Math.max(0, Math.min(1 - height, point.y - height / 2)),
+      width,
+      height
+    };
+  }
+
   function beginNameSelection(event: ReactPointerEvent<HTMLDivElement>) {
     if (!selectingNameRegion) {
       return;
@@ -219,7 +253,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
       return;
     }
     const point = pointInImage(event);
-    const selectedRegion = {
+    const draggedRegion = {
       left: Math.min(start.x, point.x),
       top: Math.min(start.y, point.y),
       width: Math.abs(point.x - start.x),
@@ -227,13 +261,13 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
     };
     nameRegionStart.current = undefined;
     setSelectingNameRegion(false);
-    if (selectedRegion.width < 0.02 || selectedRegion.height < 0.005) {
-      setNameRegion(undefined);
-      setNotice("Name area was too small. Drag a box around the printed name.");
-      return;
-    }
+    const selectedRegion = draggedRegion.width < 0.03 || draggedRegion.height < 0.005
+      ? nameBandAt(point)
+      : draggedRegion;
     setNameRegion(selectedRegion);
-    setNotice("Reading only the marked name area.");
+    setNotice(draggedRegion.width < 0.03 || draggedRegion.height < 0.005
+      ? "Reading the name row you selected."
+      : "Reading only the marked name area.");
     void readTypedFields(alignment, false, selectedRegion);
   }
 
@@ -293,7 +327,8 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
             [suggestion.fieldId]: {
               value: suggestion.text,
               confirmed: false,
-              confidence: suggestion.confidence
+              confidence: suggestion.confidence,
+              ocrEngine: suggestion.ocrEngine
             }
           }));
         }
@@ -597,12 +632,12 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                   onClick={() => {
                     setNameRegion(undefined);
                     setSelectingNameRegion((current) => !current);
-                    setNotice(selectingNameRegion ? "" : "Drag a box across only the printed name line in the source image.");
+                    setNotice(selectingNameRegion ? "" : "Click the middle of the printed patient name, or drag across the name line.");
                   }}
                   disabled={pending === "ocr"}
                 >
                   <ScanText size={17} />
-                  {selectingNameRegion ? "Cancel Selection" : "Select Name Line"}
+                  {selectingNameRegion ? "Cancel Selection" : "Pick Name Row"}
                 </button>
               )}
             </div>
@@ -653,7 +688,7 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                     <label htmlFor={`field-${field.id}`}>{field.label}</label>
                     {value.confidence !== undefined && (
                       <span className={value.confidence >= 75 ? "confidence good" : "confidence uncertain"}>
-                        OCR {value.confidence}%
+                        {value.ocrEngine === "windows" ? "Windows OCR" : `OCR ${value.confidence}%`}
                       </span>
                     )}
                   </div>
@@ -712,7 +747,24 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
         <aside className="image-panel">
           <div className="band-header">
             <h3>Source Image</h3>
-            {patientCase.image && <span className="muted">Expires {new Date(patientCase.image.expiresAt).toLocaleDateString()}</span>}
+            <div className="source-image-actions">
+              {patientCase.image && <span className="muted">Expires {new Date(patientCase.image.expiresAt).toLocaleDateString()}</span>}
+              <button
+                className="secondary command source-file-action"
+                onClick={() => laptopPhotoInput.current?.click()}
+                disabled={pending === "photo" || pending === "ocr"}
+              >
+                {pending === "photo" ? <LoaderCircle className="spin" size={16} /> : <ImageUp size={16} />}
+                {patientCase.image ? "Replace Image" : "Use Laptop Image"}
+              </button>
+              <input
+                ref={laptopPhotoInput}
+                className="hidden-file-input"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={uploadLaptopPhoto}
+              />
+            </div>
           </div>
           {patientCase.image ? (
             <>
@@ -801,12 +853,12 @@ export function CaseReview({ patientCase, fields, capture, masterPatientCount, o
                     className={selectingNameRegion ? "primary command" : "secondary command"}
                     onClick={() => {
                       setSelectingNameRegion((current) => !current);
-                      setNotice(selectingNameRegion ? "" : "Drag a box around the printed name in the photo.");
+                      setNotice(selectingNameRegion ? "" : "Click the middle of the printed patient name, or drag across the name line.");
                     }}
                     disabled={pending === "ocr"}
                   >
                     <ScanText size={16} />
-                    {selectingNameRegion ? "Cancel Name Selection" : "Select Name Area On Photo"}
+                    {selectingNameRegion ? "Cancel Name Selection" : "Pick Name Row On Photo"}
                   </button>
                   {nameRegion && (
                     <button

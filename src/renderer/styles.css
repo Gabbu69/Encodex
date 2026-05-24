@@ -869,6 +869,22 @@ input[type="checkbox"] {
   top: 28px;
 }
 
+.source-image-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.source-file-action {
+  height: 34px;
+  padding: 0 11px;
+  font-size: 13px;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
 .document-preview {
   position: relative;
   margin-top: 15px;

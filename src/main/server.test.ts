@@ -86,6 +86,22 @@ describe("selected-field privacy boundary", () => {
     expect(updated.body.image).toEqual(expect.objectContaining({ mimeType: "image/jpeg" }));
   });
 
+  it("accepts an existing clear image selected on the authenticated laptop", async () => {
+    const { agent } = await harness();
+    const created = await agent
+      .post("/api/cases")
+      .send({ documentType: "xray", profileName: "Name Only", fieldIds: ["observed_name"] })
+      .expect(201);
+
+    const uploaded = await agent
+      .post(`/api/cases/${created.body.patientCase.id}/image`)
+      .attach("document", Buffer.from("clear fabricated laptop image"), { filename: "radiology.jpg", contentType: "image/jpeg" })
+      .expect(200);
+
+    expect(uploaded.body.image).toEqual(expect.objectContaining({ mimeType: "image/jpeg" }));
+    expect(uploaded.body.selectedFieldIds).toEqual(["observed_name"]);
+  });
+
   it("queues repeated phone uploads with the same selected fields in continuous mode", async () => {
     const { agent } = await harness();
     const created = await agent
